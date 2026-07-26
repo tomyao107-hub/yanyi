@@ -1,0 +1,45 @@
+# Version control and local tooling
+.git
+.github
+.claude
+.gitignore
+*.md
+!README.md
+plan.md
+run.ps1
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.production.example
+settings.local.toml
+
+# Python caches, environments, and test output
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.venv
+venv
+.coverage
+htmlcov
+*.egg-info
+backend/tests
+
+# Frontend dependencies and build output
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Runtime data and generated exports
+data/trans.db
+data/trans.db-*
+data/uploads/*
+exports/*
+
+# Editor and OS metadata
+.idea
+.vscode
+.DS_Store
+Thumbs.db

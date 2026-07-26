@@ -1,0 +1,5 @@
+default_model = "deepseek/deepseek-v4-flash"
+default_temperature = 0.3
+default_max_concurrency = 4
+context_token_budget = 1200
+segment_max_chars = 1500

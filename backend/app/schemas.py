@@ -1,0 +1,322 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+
+ProjectStatus = Literal["created", "parsing", "ready", "translating", "done", "error"]
+SegmentStatus = Literal["pending", "processing", "done", "error", "reviewed"]
+
+
+class APIModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProviderConfig(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    model: str | None = None
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_concurrency: int | None = Field(default=None, ge=1, le=32)
+    context_token_budget: int | None = Field(default=None, ge=100, le=16000)
+    generate_chapter_summaries: bool | None = None
+    stream: bool | None = None
+
+    def without_none(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
+
+
+class ProjectPatch(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    provider_cfg: ProviderConfig | None = None
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("title cannot be blank")
+        return value.strip() if value else value
+
+
+class Progress(APIModel):
+    total: int = 0
+    pending: int = 0
+    processing: int = 0
+    done: int = 0
+    error: int = 0
+    reviewed: int = 0
+    completed: int = 0
+    percent: float = 0.0
+    token_in: int = 0
+    token_out: int = 0
+
+
+class ChapterRead(APIModel):
+    id: int
+    project_id: int
+    ord: int
+    title: str | None = None
+    href: str | None = None
+    summary: str | None = None
+    segment_count: int = 0
+    completed_count: int = 0
+
+
+class ProjectRead(APIModel):
+    id: int
+    title: str
+    source_lang: str
+    target_lang: str
+    source_type: str
+    provider_cfg: dict[str, Any]
+    status: str
+    created_at: str
+    updated_at: str
+    progress: Progress = Field(default_factory=Progress)
+
+
+class ProjectDetail(ProjectRead):
+    chapters: list[ChapterRead] = Field(default_factory=list)
+
+
+class ProjectList(APIModel):
+    items: list[ProjectRead]
+    total: int
+
+
+class SegmentRead(APIModel):
+    id: int
+    project_id: int
+    chapter_id: int
+    ord: int
+    stable_key: str
+    struct_path: dict[str, Any]
+    source_text: str
+    target_text: str | None = None
+    status: str
+    error_msg: str | None = None
+    token_in: int | None = None
+    token_out: int | None = None
+    provider: str | None = None
+    updated_at: str
+
+
+class SegmentPage(APIModel):
+    items: list[SegmentRead]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class SegmentPatch(APIModel):
+    target_text: str | None = None
+    status: Literal["pending", "done", "error", "reviewed"] | None = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> SegmentPatch:
+        if "target_text" not in self.model_fields_set and self.status is None:
+            raise ValueError("target_text or status is required")
+        return self
+
+
+class GlossaryTermCreate(APIModel):
+    source_term: str = Field(min_length=1, max_length=1000)
+    target_term: str = Field(min_length=1, max_length=1000)
+    note: str | None = Field(default=None, max_length=4000)
+    case_sensitive: bool = False
+    enabled: bool = True
+
+    @field_validator("source_term", "target_term")
+    @classmethod
+    def strip_nonempty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("term cannot be blank")
+        return value
+
+
+class GlossaryBulkCreate(APIModel):
+    terms: list[GlossaryTermCreate] = Field(min_length=1, max_length=10000)
+    overwrite: bool = False
+
+
+class GlossaryTermPatch(APIModel):
+    source_term: str | None = Field(default=None, min_length=1, max_length=1000)
+    target_term: str | None = Field(default=None, min_length=1, max_length=1000)
+    note: str | None = Field(default=None, max_length=4000)
+    case_sensitive: bool | None = None
+    enabled: bool | None = None
+
+
+class GlossaryTermRead(GlossaryTermCreate):
+    id: int
+    project_id: int
+
+
+class GlossaryImportResult(APIModel):
+    items: list[GlossaryTermRead]
+    created: int
+    updated: int
+
+
+class QAItem(APIModel):
+    code: str
+    severity: Literal["error", "warn", "info"]
+    message: str
+    segment_id: int | None = None
+    stable_key: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class QAReport(APIModel):
+    project_id: int
+    generated_at: str
+    issues: list[QAItem]
+    counts: dict[str, int]
+
+
+class ExportOptions(APIModel):
+    mode: Literal["bilingual", "target_only"] = "bilingual"
+    include_untranslated: bool = True
+    format: Literal["epub", "md"] | None = None
+
+
+class ExportResult(APIModel):
+    artifact_id: int
+    filename: str
+    download_url: str
+    path: str  # filesystem path for tests and debugging
+
+
+class TranslateRequest(APIModel):
+    retry_errors: bool = True
+
+
+class TaskState(APIModel):
+    project_id: int
+    running: bool
+    status: str
+    message: str | None = None
+
+
+class CostEstimate(APIModel):
+    project_id: int
+    model: str
+    total_segments: int
+    remaining_segments: int
+    chapters_to_summarize: int
+    estimated_translation_input_tokens: int
+    estimated_translation_output_tokens: int
+    estimated_summary_input_tokens: int
+    estimated_summary_output_tokens: int
+    estimated_input_tokens: int
+    estimated_output_tokens: int
+    estimated_total_tokens: int
+    input_usd_per_million: float | None = None
+    output_usd_per_million: float | None = None
+    estimated_cost_usd: float | None = None
+    pricing_note: str
+
+
+class SegmentBulkAction(APIModel):
+    """A scoped bulk action.
+
+    With no ``segment_ids``/filters the operation applies to all segments in
+    the project; callers should show a confirmation before submitting that.
+    """
+
+    action: Literal["mark_reviewed", "set_pending", "retranslate"]
+    segment_ids: list[int] | None = Field(default=None, max_length=10000)
+    chapter_id: int | None = None
+    statuses: list[SegmentStatus] | None = None
+    start_translation: bool = True
+
+
+class BulkActionResult(APIModel):
+    project_id: int
+    matched: int
+    updated: int
+    translation_started: bool = False
+
+
+class PublicSettings(APIModel):
+    app_name: str
+    app_version: str
+    upload_limit_mb: int
+    supported_source_types: list[str]
+    supported_export_modes: list[str]
+    provider_defaults: dict[str, Any]
+    suggested_models: list[str]
+    segment_max_chars: int
+
+
+class TMStats(APIModel):
+    project_id: int
+    global_entries: int
+    language_pair_entries: int
+    total_hits: int
+    project_segments: int
+    project_tm_matches: int
+    reusable_remaining_segments: int
+    completed_without_provider: int
+
+
+class TMEntryRead(APIModel):
+    id: int
+    src_hash: str
+    source_lang: str
+    target_lang: str
+    source_text: str
+    target_text: str
+    hit_count: int
+    updated_at: str
+
+
+class TMEntryPage(APIModel):
+    items: list[TMEntryRead]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class LoginRequest(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    username: str = Field(min_length=1, max_length=150)
+    password: SecretStr = Field(min_length=1, max_length=1024)
+
+
+class AdminRead(APIModel):
+    id: int
+    username: str
+
+
+class AuthSessionRead(APIModel):
+    authenticated: bool
+    admin: AdminRead | None = None
+    idle_expires_at: str | None = None
+    absolute_expires_at: str | None = None
+
+
+class CSRFResponse(APIModel):
+    token: str
+
+
+class ChangePasswordRequest(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    current_password: SecretStr = Field(min_length=1, max_length=1024)
+    new_password: SecretStr = Field(min_length=12, max_length=1024)
+
+
+class MessageResponse(APIModel):
+    message: str
+
+
+class HealthResponse(APIModel):
+    status: Literal["ok"]
+    version: str

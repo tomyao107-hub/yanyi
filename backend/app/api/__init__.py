@@ -1,0 +1,2 @@
+"""REST and SSE routes."""
+

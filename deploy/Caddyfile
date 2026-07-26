@@ -1,0 +1,48 @@
+{
+    admin 127.0.0.1:2019
+    grace_period 10s
+    servers {
+        max_header_size 16KB
+    }
+}
+
+{$TRANS_SITE_ADDRESS:localhost} {
+    encode zstd gzip
+
+    request_body {
+        max_size 251MB
+    }
+
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+        Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests"
+    }
+
+    log {
+        output stdout
+        format filter {
+            wrap json
+            request>uri replace /redacted
+            fields {
+                request>headers>Authorization delete
+                request>headers>Cookie delete
+                request>headers>Proxy-Authorization delete
+                request>headers>Set-Cookie delete
+                resp_headers>Set-Cookie delete
+            }
+        }
+    }
+
+    reverse_proxy app:8000 {
+        flush_interval -1
+        health_uri /health/live
+        health_interval 30s
+        health_timeout 5s
+        header_up X-Real-IP {remote_host}
+    }
+}

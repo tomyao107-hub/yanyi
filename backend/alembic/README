@@ -1,0 +1,6 @@
+Alembic migrations for the local translation workbench database.
+
+From the repository root:
+
+    alembic -c backend/alembic.ini upgrade head
+

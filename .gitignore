@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# JavaScript
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local configuration and secrets
+.env
+settings.local.toml
+.claude/settings.local.json
+
+# Runtime data
+data/trans.db
+data/trans.db-*
+data/uploads/*
+!data/uploads/.gitkeep
+exports/*
+!exports/.gitkeep
+
+# Build and editor files
+*.egg-info/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

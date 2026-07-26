@@ -1,0 +1,139 @@
+name: trans-production
+
+services:
+  app:
+    build:
+      context: .
+      target: app-runtime
+    restart: unless-stopped
+    init: true
+    expose:
+      - "8000"
+    environment:
+      TRANS_ENVIRONMENT: production
+      TRANS_HOST: 0.0.0.0
+      TRANS_PORT: "8000"
+      TRANS_STATE_DIR: /var/lib/trans
+      TRANS_DATA_DIR: /var/lib/trans
+      TRANS_UPLOAD_DIR: /var/lib/trans/uploads
+      TRANS_EXPORT_DIR: /var/lib/trans/exports
+      TRANS_TEMP_DIR: /var/lib/trans/tmp
+      TRANS_BACKUP_DIR: /var/lib/trans/backups
+      TRANS_DATABASE_URL: sqlite:////var/lib/trans/trans.db
+      TRANS_FRONTEND_DIST: /app/frontend/dist
+      TRANS_RUN_MIGRATIONS_ON_STARTUP: "false"
+      TRANS_PUBLIC_ORIGIN: '${TRANS_PUBLIC_ORIGIN:?Set TRANS_PUBLIC_ORIGIN in .env.production}'
+      TRANS_TRUSTED_HOSTS: '${TRANS_TRUSTED_HOSTS:?Set TRANS_TRUSTED_HOSTS in .env.production}'
+      TRANS_ADMIN_USERNAME: '${TRANS_ADMIN_USERNAME:?Set TRANS_ADMIN_USERNAME in .env.production}'
+      TRANS_CORS_ORIGINS: '${TRANS_CORS_ORIGINS:-[]}'
+      TRANS_FORWARDED_ALLOW_IPS: '${TRANS_FORWARDED_ALLOW_IPS:-127.0.0.1}'
+      TRANS_MAX_UPLOAD_MB: "250"
+      TRANS_ADMIN_BOOTSTRAP_PASSWORD_FILE: /run/secrets/admin_bootstrap_password
+      TRANS_MASTER_KEY_FILE: /run/secrets/master_key
+    secrets:
+      - admin_bootstrap_password
+      - master_key
+    volumes:
+      - trans-state:/var/lib/trans
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,sys,urllib.request;
+          response=urllib.request.urlopen('http://127.0.0.1:8000/health/live',timeout=3);
+          payload=json.load(response);
+          sys.exit(0 if response.status==200 and payload.get('status')=='ok' else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    deploy:
+      replicas: 1
+    networks:
+      - internal
+
+  caddy:
+    build:
+      context: .
+      target: caddy-runtime
+    restart: unless-stopped
+    init: true
+    depends_on:
+      app:
+        condition: service_healthy
+        restart: true
+    ports:
+      - target: 80
+        published: "${TRANS_HTTP_PORT:-80}"
+        protocol: tcp
+      - target: 443
+        published: "${TRANS_HTTPS_PORT:-443}"
+        protocol: tcp
+      - target: 443
+        published: "${TRANS_HTTPS_PORT:-443}"
+        protocol: udp
+    environment:
+      TRANS_SITE_ADDRESS: '${TRANS_SITE_ADDRESS:?Set TRANS_SITE_ADDRESS in .env.production}'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --no-verbose
+        - --tries=1
+        - --spider
+        - http://127.0.0.1:2019/config/
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    networks:
+      - internal
+
+secrets:
+  admin_bootstrap_password:
+    file: '${TRANS_ADMIN_BOOTSTRAP_PASSWORD_SECRET_FILE:?Set TRANS_ADMIN_BOOTSTRAP_PASSWORD_SECRET_FILE in .env.production}'
+  master_key:
+    file: '${TRANS_MASTER_KEY_SECRET_FILE:?Set TRANS_MASTER_KEY_SECRET_FILE in .env.production}'
+
+volumes:
+  trans-state:
+  caddy-data:
+  caddy-config:
+
+networks:
+  internal:
+    driver: bridge

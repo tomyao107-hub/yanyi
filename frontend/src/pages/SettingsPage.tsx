@@ -151,9 +151,15 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <form id="settings-form" onSubmit={submit} className="mt-8 space-y-5">
+      {/* Server-side configuration manages its own state through mutations and
+          contains its own <form> elements. It must stay OUTSIDE settings-form:
+          nested forms are invalid HTML and make the inner submit buttons trigger
+          a native navigation instead of their React onSubmit handlers. */}
+      <div className="mt-8 space-y-5">
         <ServerSettings />
+      </div>
 
+      <form id="settings-form" onSubmit={submit} className="mt-5 space-y-5">
         <SettingSection
           icon={Cpu}
           title="翻译模型"

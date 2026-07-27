@@ -27,6 +27,7 @@ exports/*
 !exports/.gitkeep
 
 # Build and editor files
+work/
 *.egg-info/
 .coverage
 htmlcov/

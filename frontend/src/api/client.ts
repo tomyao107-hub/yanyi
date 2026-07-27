@@ -4,10 +4,19 @@ import type {
   ExportOptions,
   ExportResult,
   AuthSession,
+  ConnectionTestResult,
   GlossaryTerm,
   LoginInput,
+  ModelProfile,
+  ModelProfileInput,
   Project,
   ProjectDetail,
+  PromptPreview,
+  PromptPreviewInput,
+  PromptTemplate,
+  PromptTemplateInput,
+  ProviderCredential,
+  ProviderCredentialInput,
   PublicSettings,
   QaIssue,
   Segment,
@@ -177,6 +186,105 @@ export const api = {
 
   async runtimeSettings(): Promise<PublicSettings> {
     return request<PublicSettings>("/settings");
+  },
+
+  async providerCredentials(): Promise<ProviderCredential[]> {
+    return request<ProviderCredential[]>("/settings/credentials");
+  },
+
+  async createProviderCredential(
+    input: ProviderCredentialInput,
+  ): Promise<ProviderCredential> {
+    return request<ProviderCredential>("/settings/credentials", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  async rotateProviderCredential(id: number, apiKey: string): Promise<ProviderCredential> {
+    return request<ProviderCredential>(`/settings/credentials/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+  },
+
+  async deleteProviderCredential(id: number): Promise<void> {
+    await request<void>(`/settings/credentials/${id}`, { method: "DELETE" });
+  },
+
+  async modelProfiles(): Promise<ModelProfile[]> {
+    return request<ModelProfile[]>("/settings/model-profiles");
+  },
+
+  async createModelProfile(input: ModelProfileInput): Promise<ModelProfile> {
+    return request<ModelProfile>("/settings/model-profiles", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  async updateModelProfile(
+    id: number,
+    input: Partial<ModelProfileInput>,
+  ): Promise<ModelProfile> {
+    return request<ModelProfile>(`/settings/model-profiles/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  },
+
+  async setDefaultModelProfile(id: number): Promise<ModelProfile> {
+    return request<ModelProfile>(`/settings/model-profiles/${id}/default`, {
+      method: "POST",
+    });
+  },
+
+  async testModelProfile(id: number): Promise<ConnectionTestResult> {
+    return request<ConnectionTestResult>(`/settings/model-profiles/${id}/test`, {
+      method: "POST",
+    });
+  },
+
+  async deleteModelProfile(id: number): Promise<void> {
+    await request<void>(`/settings/model-profiles/${id}`, { method: "DELETE" });
+  },
+
+  async promptTemplates(): Promise<PromptTemplate[]> {
+    return request<PromptTemplate[]>("/settings/prompt-templates");
+  },
+
+  async createPromptTemplate(input: PromptTemplateInput): Promise<PromptTemplate> {
+    return request<PromptTemplate>("/settings/prompt-templates", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  async updatePromptTemplate(
+    id: number,
+    input: Partial<PromptTemplateInput>,
+  ): Promise<PromptTemplate> {
+    return request<PromptTemplate>(`/settings/prompt-templates/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  },
+
+  async setDefaultPromptTemplate(id: number): Promise<PromptTemplate> {
+    return request<PromptTemplate>(`/settings/prompt-templates/${id}/default`, {
+      method: "POST",
+    });
+  },
+
+  async deletePromptTemplate(id: number): Promise<void> {
+    await request<void>(`/settings/prompt-templates/${id}`, { method: "DELETE" });
+  },
+
+  async previewPromptTemplate(input: PromptPreviewInput): Promise<PromptPreview> {
+    return request<PromptPreview>("/settings/prompt-templates/preview", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   },
 
   async projects(): Promise<Project[]> {

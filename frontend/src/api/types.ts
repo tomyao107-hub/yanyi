@@ -203,6 +203,119 @@ export interface PublicSettings {
   provider_defaults: ProviderConfig;
   suggested_models: string[];
   segment_max_chars: number;
+  providers: ProviderOption[];
+  generation_param_keys: string[];
+  prompt_placeholders: string[];
+  connection_test_notice: string;
+  credential_key_is_ephemeral: boolean;
+}
+
+export interface ProviderOption {
+  name: string;
+  label: string;
+  hint: string;
+  requires_base_url: boolean;
+}
+
+export interface ProviderCredential {
+  id: number;
+  provider: string;
+  profile_label: string;
+  configured: boolean;
+  masked_key: string;
+  enabled: boolean;
+  test_status: "untested" | "valid" | "invalid" | string;
+  last_tested_at: string | null;
+  last_test_error_code: string | null;
+  last_test_error_summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderCredentialInput {
+  provider: string;
+  profile_label: string;
+  api_key: string;
+}
+
+export interface ModelProfile {
+  id: number;
+  display_name: string;
+  provider: string;
+  litellm_model_id: string;
+  credential_id: number | null;
+  base_url: string | null;
+  enabled: boolean;
+  is_default: boolean;
+  max_concurrency: number;
+  context_window_tokens: number;
+  max_output_tokens: number;
+  generation_params: Record<string, unknown>;
+  input_price_per_million: number | null;
+  output_price_per_million: number | null;
+  cache_read_price_per_million: number | null;
+  cache_write_price_per_million: number | null;
+  insecure_transport: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelProfileInput {
+  display_name: string;
+  provider: string;
+  litellm_model_id: string;
+  credential_id?: number | null;
+  base_url?: string | null;
+  enabled?: boolean;
+  is_default?: boolean;
+  max_concurrency?: number;
+  context_window_tokens?: number;
+  max_output_tokens?: number;
+  generation_params?: Record<string, unknown>;
+}
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  tested_at: string;
+  error_code: string | null;
+  error_summary: string | null;
+}
+
+export interface PromptTemplate {
+  id: number;
+  name: string;
+  description: string | null;
+  system_prompt: string;
+  user_prefix: string | null;
+  enabled: boolean;
+  is_default: boolean;
+  is_builtin: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PromptTemplateInput {
+  name: string;
+  description?: string | null;
+  system_prompt: string;
+  user_prefix?: string | null;
+  enabled?: boolean;
+  is_default?: boolean;
+}
+
+export interface PromptPreviewInput {
+  system_prompt?: string;
+  user_prefix?: string | null;
+  template_id?: number;
+  source_lang: string;
+  target_lang: string;
+}
+
+export interface PromptPreview {
+  rendered: string;
+  placeholders: string[];
 }
 
 export interface AdminUser {

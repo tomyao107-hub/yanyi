@@ -14,6 +14,7 @@ import {
   Type,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { ServerSettings } from "../components/ServerSettings";
 import {
   type AppSettings,
   type ThemePreference,
@@ -151,6 +152,8 @@ export function SettingsPage() {
       </div>
 
       <form id="settings-form" onSubmit={submit} className="mt-8 space-y-5">
+        <ServerSettings />
+
         <SettingSection
           icon={Cpu}
           title="翻译模型"

@@ -1,5 +1,9 @@
 export const queryKeys = {
   authSession: ["auth", "session"] as const,
+  runtimeSettings: ["settings", "runtime"] as const,
+  providerCredentials: ["settings", "credentials"] as const,
+  modelProfiles: ["settings", "model-profiles"] as const,
+  promptTemplates: ["settings", "prompt-templates"] as const,
   projects: ["projects"] as const,
   project: (id: number) => ["projects", id] as const,
   segments: (id: number, chapterId?: number, status?: string) =>

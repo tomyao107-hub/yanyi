@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 class SPAStaticFiles(StaticFiles):
+    @staticmethod
+    def _set_cache_headers(response: Response, path: str) -> Response:
+        if path in {"", ".", "index.html"}:
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
     async def get_response(self, path: str, scope: dict[str, object]) -> Response:
         normalized = path.lstrip("/")
         first_component = normalized.split("/", 1)[0]
@@ -46,8 +54,9 @@ class SPAStaticFiles(StaticFiles):
                 raise
         else:
             if response.status_code != 404:
-                return response
-        return await super().get_response("index.html", scope)
+                return self._set_cache_headers(response, normalized)
+        response = await super().get_response("index.html", scope)
+        return self._set_cache_headers(response, "index.html")
 
 
 def _recover_interrupted_work() -> None:

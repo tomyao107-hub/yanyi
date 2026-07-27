@@ -28,6 +28,8 @@ const queryClient = new QueryClient({
   },
 });
 
+document.documentElement.dataset.appBuild = "2026-07-27-cache-refresh";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>

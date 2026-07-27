@@ -341,6 +341,15 @@ export interface BatchSegmentInput {
   start_translation?: boolean;
 }
 
+export interface TranslateScope {
+  retry_errors?: boolean;
+  // Limit the run to one chapter and/or an explicit segment selection. Scoped
+  // runs are non-destructive: only pending (and, with retry_errors, error)
+  // segments in scope are queued; existing translations are preserved.
+  chapter_id?: number;
+  segment_ids?: number[];
+}
+
 export interface UploadProjectInput {
   file: File;
   title?: string;

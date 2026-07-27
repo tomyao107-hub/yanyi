@@ -22,6 +22,7 @@ import type {
   Segment,
   SegmentPage,
   TaskState,
+  TranslateScope,
   TranslationMemoryStats,
   UploadProjectInput,
 } from "./types";
@@ -333,8 +334,11 @@ export const api = {
     );
   },
 
-  async startTranslation(id: number): Promise<TaskState> {
-    return request<TaskState>(`/projects/${id}/translate`, { method: "POST" });
+  async startTranslation(id: number, scope?: TranslateScope): Promise<TaskState> {
+    return request<TaskState>(`/projects/${id}/translate`, {
+      method: "POST",
+      body: JSON.stringify(scope ?? {}),
+    });
   },
 
   async stopTranslation(id: number): Promise<TaskState> {

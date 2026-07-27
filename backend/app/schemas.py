@@ -199,7 +199,16 @@ class ExportResult(APIModel):
 
 
 class TranslateRequest(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
     retry_errors: bool = True
+    # Optional scope. With neither field the whole project's eligible segments
+    # are translated. ``chapter_id`` limits to one chapter; ``segment_ids``
+    # limits to an explicit selection. They may be combined (the intersection).
+    # Scoped runs never overwrite existing translations — only pending (and,
+    # when retry_errors is set, error) segments in scope are queued.
+    chapter_id: int | None = None
+    segment_ids: list[int] | None = Field(default=None, max_length=10000)
 
 
 class TaskState(APIModel):

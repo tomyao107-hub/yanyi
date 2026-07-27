@@ -34,7 +34,13 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, errorMessage, projectProgress } from "../api/client";
 import { queryKeys } from "../api/queryKeys";
-import type { ProviderConfig, Segment, SegmentPage, StreamEvent } from "../api/types";
+import type {
+  ProviderConfig,
+  Segment,
+  SegmentPage,
+  StreamEvent,
+  TranslateScope,
+} from "../api/types";
 import { useProjectStream } from "../api/useProjectStream";
 import { EmptyState } from "../components/EmptyState";
 import {
@@ -243,19 +249,28 @@ export function WorkbenchPage() {
   const streamConnection = useProjectStream(projectId, streamEnabled, onStreamEvent);
 
   const startMutation = useMutation({
-    mutationFn: () => api.startTranslation(projectId),
-    onSuccess: (result) => {
+    mutationFn: (scope: TranslateScope | undefined) => api.startTranslation(projectId, scope),
+    onSuccess: (result, scope) => {
       setStartOpen(false);
       setLiveProgress(null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
+      const scoped = scope?.chapter_id !== undefined || scope?.segment_ids !== undefined;
       if (result.running) {
         setForceStream(true);
-        notify("翻译任务已启动。", "success");
+        if (scope?.segment_ids !== undefined) setSelectedIds(new Set());
+        notify(
+          scope?.chapter_id !== undefined
+            ? "已开始翻译本章待处理段落。"
+            : scope?.segment_ids !== undefined
+              ? "已开始翻译所选待处理段落。"
+              : "翻译任务已启动。",
+          "success",
+        );
       } else {
         setForceStream(false);
         void queryClient.invalidateQueries({ queryKey: queryKeys.allSegments(projectId) });
-        notify("没有待翻译或可重试的段落。", "info");
+        notify(scoped ? "所选范围内没有待翻译的段落。" : "没有待翻译或可重试的段落。", "info");
       }
     },
     onError: (error) => notify(errorMessage(error), "error"),
@@ -610,6 +625,18 @@ export function WorkbenchPage() {
             </select>
             <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-400" />
           </div>
+          {chapterId !== undefined && !isTranslating ? (
+            <button
+              type="button"
+              className="btn-secondary min-h-9 whitespace-nowrap px-2.5 py-1.5 text-xs"
+              onClick={() => startMutation.mutate({ chapter_id: chapterId })}
+              disabled={startMutation.isPending || project.status === "parsing"}
+              title="仅翻译本章的待处理段落，不影响已有译文"
+            >
+              <Play className="size-3.5 fill-current" />
+              <span className="hidden sm:inline">翻译本章</span>
+            </button>
+          ) : null}
           <div className="relative w-32 sm:w-36">
             <Filter className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-ink-400" />
             <select
@@ -810,6 +837,15 @@ export function WorkbenchPage() {
               <span className="h-5 w-px bg-white/15" />
               <button
                 type="button"
+                className="inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs hover:bg-white/10 disabled:opacity-40"
+                onClick={() => startMutation.mutate({ segment_ids: [...selectedIds] })}
+                disabled={isTranslating || startMutation.isPending}
+                title="仅翻译所选中的待处理段落，保留已有译文"
+              >
+                <Play className="size-3.5 fill-current" />翻译所选
+              </button>
+              <button
+                type="button"
                 className="inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs hover:bg-white/10"
                 onClick={() => setBatchConfirm("review")}
               >
@@ -817,8 +853,10 @@ export function WorkbenchPage() {
               </button>
               <button
                 type="button"
-                className="inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs hover:bg-white/10"
+                className="inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs hover:bg-white/10 disabled:opacity-40"
                 onClick={() => setBatchConfirm("retranslate")}
+                disabled={isTranslating || batchMutation.isPending}
+                title="丢弃所选段落的现有译文并重新翻译"
               >
                 <RotateCw className="size-3.5" />批量重译
               </button>
@@ -862,7 +900,7 @@ export function WorkbenchPage() {
         project={project}
         pending={startMutation.isPending}
         onClose={() => setStartOpen(false)}
-        onConfirm={() => startMutation.mutate()}
+        onConfirm={() => startMutation.mutate(undefined)}
       />
       <ExportDialog open={exportOpen} project={project} onClose={() => setExportOpen(false)} />
       <ProjectConfigDialog

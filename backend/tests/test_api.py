@@ -510,6 +510,106 @@ def test_single_retranslate_forces_provider_and_scopes_segment(
     )
 
 
+def test_scoped_translation_by_chapter_and_selection(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.app.engine import translator as core_translator
+
+    class MockProvider:
+        async def translate(self, text: str, **kwargs: object) -> TranslationResult:
+            del kwargs
+            return TranslationResult(
+                text=f"译文：{text}", token_in=3, token_out=4, model="mock/scoped"
+            )
+
+    monkeypatch.setattr(core_translator, "LiteLLMProvider", MockProvider)
+    response = client.post(
+        "/api/projects",
+        files={
+            "file": (
+                "two.md",
+                b"# One\n\nAlpha here.\n\nBeta here.\n\n# Two\n\nGamma here.",
+            )
+        },
+        data={"title": "Two Chapters", "provider_cfg": '{"model":"mock/model"}'},
+    )
+    assert response.status_code == 201, response.text
+    detail = response.json()
+    project_id = int(detail["id"])
+    chapters = sorted(detail["chapters"], key=lambda chapter: chapter["ord"])
+    assert len(chapters) == 2
+    first_chapter, second_chapter = chapters[0]["id"], chapters[1]["id"]
+
+    segments = client.get(
+        f"/api/projects/{project_id}/segments", params={"page_size": 100}
+    ).json()["items"]
+    first_segments = [s for s in segments if s["chapter_id"] == first_chapter]
+    second_segments = [s for s in segments if s["chapter_id"] == second_chapter]
+    # Both chapters carry at least a heading plus body text; exact counts depend
+    # on the parser, so only the split itself matters here.
+    assert first_segments and second_segments
+    assert all(s["status"] == "pending" for s in segments)
+
+    def wait_until_idle() -> dict[str, object]:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            detail = client.get(f"/api/projects/{project_id}").json()
+            if detail["status"] in {"ready", "done"}:
+                return detail
+            time.sleep(0.01)
+        raise AssertionError("translation did not settle")
+
+    # Empty selection is a no-op, not a whole-project run.
+    empty = client.post(
+        f"/api/projects/{project_id}/translate", json={"segment_ids": []}
+    )
+    assert empty.status_code == 202
+    assert empty.json()["running"] is False
+
+    # Chapter scope only touches that chapter's segments.
+    scoped = client.post(
+        f"/api/projects/{project_id}/translate", json={"chapter_id": first_chapter}
+    )
+    assert scoped.status_code == 202, scoped.text
+    assert scoped.json()["running"] is True
+    wait_until_idle()
+    for segment in first_segments:
+        assert client.get(f"/api/segments/{segment['id']}").json()["status"] == "done"
+    assert client.get(f"/api/segments/{second_segments[0]['id']}").json()["status"] == "pending"
+
+    # Selecting only already-done segments queues nothing (non-destructive, force=False).
+    reselect = client.post(
+        f"/api/projects/{project_id}/translate",
+        json={"segment_ids": [s["id"] for s in first_segments]},
+    )
+    assert reselect.status_code == 202
+    assert reselect.json()["running"] is False
+
+    # An explicit selection of the remaining pending segments finishes the book;
+    # already-done chapter-one segments in the selection are skipped, not redone.
+    finish = client.post(
+        f"/api/projects/{project_id}/translate",
+        json={"segment_ids": [s["id"] for s in second_segments]},
+    )
+    assert finish.status_code == 202, finish.text
+    assert finish.json()["running"] is True
+    final = wait_until_idle()
+    assert final["status"] == "done"
+    for segment in second_segments:
+        assert client.get(f"/api/segments/{segment['id']}").json()[
+            "target_text"
+        ].startswith("译文：")
+
+
+def test_scoped_translation_rejects_unknown_chapter(client: TestClient) -> None:
+    project_id = int(upload_markdown(client)["id"])
+    response = client.post(
+        f"/api/projects/{project_id}/translate", json={"chapter_id": 999999}
+    )
+    assert response.status_code == 404
+
+
 def test_openapi_exposes_sse_and_export(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
     assert "/api/projects/{project_id}/stream" in paths

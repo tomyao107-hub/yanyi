@@ -376,31 +376,65 @@ async def start_translation(
             status="translating",
             message="Translation is already running",
         )
+    scoped = request.chapter_id is not None or request.segment_ids is not None
+    if request.segment_ids is not None and not request.segment_ids:
+        return TaskState(
+            project_id=project_id,
+            running=False,
+            status=project.status,
+            message="No segments selected",
+        )
+    if request.chapter_id is not None:
+        chapter_exists = session.get(Chapter, request.chapter_id)
+        if chapter_exists is None or chapter_exists.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Chapter not found")
+
     eligible_statuses = ["pending", "error"] if request.retry_errors else ["pending"]
-    remaining = int(
-        session.exec(
-            select(func.count(Segment.id)).where(
-                Segment.project_id == project_id,
-                Segment.status.in_(eligible_statuses),
-            )
-        ).one()
-    )
+    filters = [
+        Segment.project_id == project_id,
+        Segment.status.in_(eligible_statuses),
+    ]
+    if request.chapter_id is not None:
+        filters.append(Segment.chapter_id == request.chapter_id)
+    if request.segment_ids is not None:
+        filters.append(Segment.id.in_(request.segment_ids))
+
+    if scoped:
+        # Resolve the concrete queue up front so a restart replays exactly the
+        # same segments, and so the response can report the real count.
+        eligible_ids = [
+            int(segment_id)
+            for segment_id in session.exec(
+                select(Segment.id).where(*filters).order_by(Segment.ord, Segment.id)
+            ).all()
+        ]
+        remaining = len(eligible_ids)
+    else:
+        eligible_ids = None
+        remaining = int(session.exec(select(func.count(Segment.id)).where(*filters)).one())
+
     if remaining == 0:
         return TaskState(
             project_id=project_id,
             running=False,
             status=project.status,
-            message="No pending segments",
+            message="No pending segments in scope" if scoped else "No pending segments",
         )
 
+    # force stays False so scoped runs only fill in pending/error segments and
+    # never discard translations the user already has in the same chapter.
+    payload: dict[str, Any] = {"retry_errors": request.retry_errors}
+    if eligible_ids is not None:
+        payload["segment_ids"] = eligible_ids
     started = translation_tasks.start(
         project_id,
         lambda stop_event: run_project_translation(
             project_id,
             stop_event,
             retry_errors=request.retry_errors,
+            segment_ids=eligible_ids,
         ),
-        payload={"retry_errors": request.retry_errors},
+        payload=payload,
     )
     return TaskState(
         project_id=project_id,

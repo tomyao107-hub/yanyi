@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   ChevronUp,
   FlaskConical,
   KeyRound,
@@ -90,11 +91,19 @@ const emptyCredential: ProviderCredentialInput = {
   api_key: "",
 };
 
+// How the profile form supplies its API key: bind an existing encrypted
+// credential, encrypt a brand-new one inline, or use none (fall back to the
+// backend's ambient provider environment variables).
+type CredentialMode = "reuse" | "new" | "none";
+
 interface ProfileDraft {
   displayName: string;
   provider: string;
   modelId: string;
+  credentialMode: CredentialMode;
   credentialId: string;
+  newCredentialLabel: string;
+  newCredentialKey: string;
   baseUrl: string;
   maxConcurrency: number;
   contextWindowTokens: number;
@@ -108,7 +117,10 @@ const emptyProfile: ProfileDraft = {
   displayName: "",
   provider: "custom",
   modelId: "",
+  credentialMode: "new",
   credentialId: "",
+  newCredentialLabel: "",
+  newCredentialKey: "",
   baseUrl: "",
   maxConcurrency: 4,
   contextWindowTokens: 128000,
@@ -141,7 +153,12 @@ function profileToDraft(profile: ModelProfile): ProfileDraft {
     displayName: profile.display_name,
     provider: profile.provider,
     modelId: profile.litellm_model_id,
+    // An existing profile keeps whatever binding it had; a new key is only ever
+    // opted into explicitly, so editing never silently rotates a shared key.
+    credentialMode: profile.credential_id === null ? "none" : "reuse",
     credentialId: profile.credential_id === null ? "" : String(profile.credential_id),
+    newCredentialLabel: "",
+    newCredentialKey: "",
     baseUrl: profile.base_url ?? "",
     maxConcurrency: profile.max_concurrency,
     contextWindowTokens: profile.context_window_tokens,
@@ -242,6 +259,12 @@ export function ServerSettings() {
     },
     onError: (error) => notify(errorMessage(error), "error"),
   });
+  // Created as part of saving a model, so it stays quiet: the profile save
+  // reports success, and errors surface through submitProfile's try/catch.
+  const createInlineCredential = useMutation({
+    mutationFn: api.createProviderCredential,
+    onSuccess: () => refreshCredentials(),
+  });
 
   const saveProfile = useMutation({
     mutationFn: (input: ModelProfileInput) =>
@@ -331,7 +354,7 @@ export function ServerSettings() {
     setProfileFormOpen(true);
   };
 
-  const submitProfile = (event: FormEvent) => {
+  const submitProfile = async (event: FormEvent) => {
     event.preventDefault();
     let generationParams: Record<string, unknown>;
     try {
@@ -344,11 +367,45 @@ export function ServerSettings() {
       notify(error instanceof Error ? error.message : "生成参数不是有效 JSON。", "error");
       return;
     }
+
+    // Resolve the credential binding from the chosen mode. A new key is
+    // encrypted first so the profile can bind its id; if that write fails the
+    // profile is never created, leaving no dangling reference.
+    let credentialId: number | null;
+    if (profileDraft.credentialMode === "reuse") {
+      if (!profileDraft.credentialId) {
+        notify("请选择要复用的已保存密钥。", "error");
+        return;
+      }
+      credentialId = Number(profileDraft.credentialId);
+    } else if (profileDraft.credentialMode === "new") {
+      const apiKey = profileDraft.newCredentialKey.trim();
+      if (!apiKey) {
+        notify("请输入新的 API Key，或改用其他密钥来源。", "error");
+        return;
+      }
+      const label =
+        profileDraft.newCredentialLabel.trim() || profileDraft.displayName.trim();
+      try {
+        const created = await createInlineCredential.mutateAsync({
+          provider: profileDraft.provider,
+          profile_label: label,
+          api_key: apiKey,
+        });
+        credentialId = created.id;
+      } catch (error) {
+        notify(errorMessage(error), "error");
+        return;
+      }
+    } else {
+      credentialId = null;
+    }
+
     saveProfile.mutate({
       display_name: profileDraft.displayName.trim(),
       provider: profileDraft.provider,
       litellm_model_id: profileDraft.modelId.trim(),
-      credential_id: profileDraft.credentialId ? Number(profileDraft.credentialId) : null,
+      credential_id: credentialId,
       base_url: profileDraft.baseUrl.trim() || null,
       enabled: profileDraft.enabled,
       is_default: profileDraft.isDefault,
@@ -381,187 +438,9 @@ export function ServerSettings() {
       )}
 
       <ServerSection
-        icon={KeyRound}
-        title="供应商凭据"
-        description="API Key 在服务端加密保存，读取接口和浏览器都不会得到明文。"
-        action={
-          <button
-            type="button"
-            className="btn-secondary shrink-0"
-            onClick={() => setCredentialFormOpen((value) => !value)}
-          >
-            {credentialFormOpen ? <ChevronUp className="size-4" /> : <Plus className="size-4" />}
-            {credentialFormOpen ? "收起" : "添加凭据"}
-          </button>
-        }
-      >
-        {credentialFormOpen && (
-          <form
-            className="grid gap-4 border-b hairline bg-ink-50/60 px-5 py-5 dark:bg-ink-950/30 sm:grid-cols-2 sm:px-6"
-            onSubmit={(event) => {
-              event.preventDefault();
-              createCredential.mutate({
-                ...credentialDraft,
-                profile_label: credentialDraft.profile_label.trim(),
-                api_key: credentialDraft.api_key.trim(),
-              });
-            }}
-          >
-            <div>
-              <label className="field-label" htmlFor="credential-provider">供应商</label>
-              <select
-                id="credential-provider"
-                className="field"
-                value={credentialDraft.provider}
-                onChange={(event) =>
-                  setCredentialDraft((current) => ({ ...current, provider: event.target.value }))
-                }
-              >
-                {providers.map((provider) => (
-                  <option key={provider.name} value={provider.name}>{provider.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="field-label" htmlFor="credential-label">凭据名称</label>
-              <input
-                id="credential-label"
-                className="field"
-                value={credentialDraft.profile_label}
-                onChange={(event) =>
-                  setCredentialDraft((current) => ({
-                    ...current,
-                    profile_label: event.target.value,
-                  }))
-                }
-                placeholder="例如：国内中转"
-                required
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="field-label" htmlFor="credential-key">API Key</label>
-              <input
-                id="credential-key"
-                type="password"
-                autoComplete="new-password"
-                className="field font-mono"
-                value={credentialDraft.api_key}
-                onChange={(event) =>
-                  setCredentialDraft((current) => ({ ...current, api_key: event.target.value }))
-                }
-                placeholder="输入后将立即加密，之后不可查看明文"
-                required
-              />
-            </div>
-            <div className="flex justify-end gap-2 sm:col-span-2">
-              <button type="button" className="btn-ghost" onClick={() => setCredentialFormOpen(false)}>
-                取消
-              </button>
-              <button type="submit" className="btn-primary" disabled={createCredential.isPending}>
-                <ShieldCheck className="size-4" />
-                加密保存
-              </button>
-            </div>
-          </form>
-        )}
-        {credentialsQuery.isLoading ? (
-          <EmptyMessage>正在读取凭据...</EmptyMessage>
-        ) : credentials.length === 0 ? (
-          <EmptyMessage>尚未保存服务端凭据。</EmptyMessage>
-        ) : (
-          <div className="divide-y hairline">
-            {credentials.map((credential) => (
-              <div key={credential.id} className="px-5 py-4 sm:px-6">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-ink-900 dark:text-white">
-                        {credential.profile_label}
-                      </span>
-                      <StatusPill tone="neutral">{credential.provider}</StatusPill>
-                      <StatusPill
-                        tone={
-                          credential.test_status === "valid"
-                            ? "success"
-                            : credential.test_status === "invalid"
-                              ? "warning"
-                              : "neutral"
-                        }
-                      >
-                        {credential.test_status === "valid"
-                          ? "已验证"
-                          : credential.test_status === "invalid"
-                            ? "验证失败"
-                            : "未验证"}
-                      </StatusPill>
-                    </div>
-                    <p className="mt-1 font-mono text-xs text-ink-500">{credential.masked_key}</p>
-                  </div>
-                  <div className="flex shrink-0 gap-1">
-                    <button
-                      type="button"
-                      className="btn-ghost"
-                      onClick={() => {
-                        setRotateId(credential.id);
-                        setRotateKey("");
-                      }}
-                    >
-                      <RefreshCw className="size-4" />
-                      轮换
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn text-cinnabar-600"
-                      title="删除凭据"
-                      aria-label={`删除凭据 ${credential.profile_label}`}
-                      onClick={() => {
-                        if (window.confirm(`确定删除凭据“${credential.profile_label}”吗？`)) {
-                          deleteCredential.mutate(credential.id);
-                        }
-                      }}
-                    >
-                      <Trash2 className="size-4" />
-                    </button>
-                  </div>
-                </div>
-                {rotateId === credential.id && (
-                  <form
-                    className="mt-4 flex flex-col gap-2 sm:flex-row"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      rotateCredential.mutate({ id: credential.id, apiKey: rotateKey.trim() });
-                    }}
-                  >
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      className="field flex-1 font-mono"
-                      value={rotateKey}
-                      onChange={(event) => setRotateKey(event.target.value)}
-                      placeholder="输入新的 API Key"
-                      aria-label={`轮换 ${credential.profile_label} 的 API Key`}
-                      required
-                    />
-                    <button type="submit" className="btn-primary" disabled={rotateCredential.isPending}>
-                      <Save className="size-4" />
-                      保存新密钥
-                    </button>
-                    <button type="button" className="icon-btn" onClick={() => setRotateId(null)}>
-                      <X className="size-4" />
-                      <span className="sr-only">取消轮换</span>
-                    </button>
-                  </form>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </ServerSection>
-
-      <ServerSection
         icon={Server}
         title="模型配置"
-        description="每个模型可独立设置供应商、API 地址、凭据与并发参数，支持多个供应商共存。"
+        description="集中管理翻译模型：为每个模型选择供应商、模型 ID、API 地址与密钥。同一密钥可被多个模型复用。"
         action={
           <button type="button" className="btn-secondary shrink-0" onClick={openNewProfile}>
             <Plus className="size-4" />
@@ -626,26 +505,101 @@ export function ServerSettings() {
                   ))}
                 </datalist>
               </div>
-              <div>
-                <label className="field-label" htmlFor="profile-credential">API 凭据</label>
-                <select
-                  id="profile-credential"
-                  className="field"
-                  value={profileDraft.credentialId}
-                  onChange={(event) =>
-                    setProfileDraft((current) => ({
-                      ...current,
-                      credentialId: event.target.value,
-                    }))
-                  }
-                >
-                  <option value="">不使用已保存凭据</option>
-                  {compatibleCredentials.map((credential) => (
-                    <option key={credential.id} value={credential.id}>
-                      {credential.profile_label}（{credential.masked_key}）
-                    </option>
+              <div className="sm:col-span-2">
+                <span className="field-label">API 密钥</span>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    ["new", "输入新密钥"],
+                    ["reuse", "复用已保存"],
+                    ["none", "不使用密钥"],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`min-h-10 rounded-lg border px-3 text-sm font-medium transition ${
+                        profileDraft.credentialMode === mode
+                          ? "border-cinnabar-600 bg-cinnabar-50 text-cinnabar-800 dark:bg-cinnabar-950/40 dark:text-cinnabar-300"
+                          : "border-ink-200 bg-white text-ink-600 hover:bg-ink-50 dark:border-ink-700 dark:bg-ink-900 dark:text-ink-300"
+                      }`}
+                      aria-pressed={profileDraft.credentialMode === mode}
+                      onClick={() =>
+                        setProfileDraft((current) => ({ ...current, credentialMode: mode }))
+                      }
+                    >
+                      {label}
+                    </button>
                   ))}
-                </select>
+                </div>
+                {profileDraft.credentialMode === "new" && (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="field-label" htmlFor="profile-new-key">API Key</label>
+                      <input
+                        id="profile-new-key"
+                        type="password"
+                        autoComplete="new-password"
+                        className="field font-mono"
+                        value={profileDraft.newCredentialKey}
+                        onChange={(event) =>
+                          setProfileDraft((current) => ({
+                            ...current,
+                            newCredentialKey: event.target.value,
+                          }))
+                        }
+                        placeholder="输入后将立即加密，之后不可查看明文"
+                      />
+                    </div>
+                    <div>
+                      <label className="field-label" htmlFor="profile-new-label">密钥名称（可选）</label>
+                      <input
+                        id="profile-new-label"
+                        className="field"
+                        value={profileDraft.newCredentialLabel}
+                        onChange={(event) =>
+                          setProfileDraft((current) => ({
+                            ...current,
+                            newCredentialLabel: event.target.value,
+                          }))
+                        }
+                        placeholder="留空则使用模型名称"
+                      />
+                    </div>
+                  </div>
+                )}
+                {profileDraft.credentialMode === "reuse" && (
+                  <div className="mt-3">
+                    {compatibleCredentials.length === 0 ? (
+                      <p className="flex items-start gap-1.5 rounded-lg border hairline bg-ink-50/60 px-3 py-2.5 text-xs leading-5 text-ink-500 dark:bg-ink-950/30">
+                        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                        该供应商还没有已保存的密钥。改用“输入新密钥”，或在下方“管理已保存的密钥”中添加。
+                      </p>
+                    ) : (
+                      <select
+                        className="field"
+                        aria-label="选择已保存的 API 密钥"
+                        value={profileDraft.credentialId}
+                        onChange={(event) =>
+                          setProfileDraft((current) => ({
+                            ...current,
+                            credentialId: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">选择已保存的密钥…</option>
+                        {compatibleCredentials.map((credential) => (
+                          <option key={credential.id} value={credential.id}>
+                            {credential.profile_label}（{credential.masked_key}）
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+                {profileDraft.credentialMode === "none" && (
+                  <p className="mt-3 text-xs leading-5 text-ink-500">
+                    不绑定密钥，改由后端环境变量提供供应商密钥（适用于本地模型或已在服务器配置的密钥）。
+                  </p>
+                )}
               </div>
               <div className="sm:col-span-2">
                 <label className="field-label" htmlFor="profile-url">
@@ -868,6 +822,203 @@ export function ServerSettings() {
             {runtimeQuery.data.connection_test_notice}
           </p>
         )}
+
+        <details className="group border-t hairline">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-5 py-3.5 text-sm font-medium text-ink-700 hover:bg-ink-50/60 dark:text-ink-200 dark:hover:bg-ink-950/30 sm:px-6">
+            <span className="flex items-center gap-2">
+              <KeyRound className="size-4 text-ink-500" />
+              管理已保存的密钥
+              <span className="rounded-md bg-ink-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-ink-600 dark:bg-ink-800 dark:text-ink-300">
+                {credentials.length}
+              </span>
+            </span>
+            <ChevronDown className="size-4 text-ink-500 transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="border-t hairline">
+            <div className="flex items-center justify-between gap-3 px-5 py-3 sm:px-6">
+              <p className="text-xs leading-5 text-ink-500">
+                密钥在服务端加密保存，读取接口和浏览器都不会得到明文。可被多个模型复用，删除前需先解除引用。
+              </p>
+              <button
+                type="button"
+                className="btn-secondary shrink-0"
+                onClick={() => setCredentialFormOpen((value) => !value)}
+              >
+                {credentialFormOpen ? <ChevronUp className="size-4" /> : <Plus className="size-4" />}
+                {credentialFormOpen ? "收起" : "添加密钥"}
+              </button>
+            </div>
+            {credentialFormOpen && (
+              <form
+                className="grid gap-4 border-t hairline bg-ink-50/60 px-5 py-5 dark:bg-ink-950/30 sm:grid-cols-2 sm:px-6"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  createCredential.mutate({
+                    ...credentialDraft,
+                    profile_label: credentialDraft.profile_label.trim(),
+                    api_key: credentialDraft.api_key.trim(),
+                  });
+                }}
+              >
+                <div>
+                  <label className="field-label" htmlFor="credential-provider">供应商</label>
+                  <select
+                    id="credential-provider"
+                    className="field"
+                    value={credentialDraft.provider}
+                    onChange={(event) =>
+                      setCredentialDraft((current) => ({ ...current, provider: event.target.value }))
+                    }
+                  >
+                    {providers.map((provider) => (
+                      <option key={provider.name} value={provider.name}>{provider.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="credential-label">密钥名称</label>
+                  <input
+                    id="credential-label"
+                    className="field"
+                    value={credentialDraft.profile_label}
+                    onChange={(event) =>
+                      setCredentialDraft((current) => ({
+                        ...current,
+                        profile_label: event.target.value,
+                      }))
+                    }
+                    placeholder="例如：国内中转"
+                    required
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="field-label" htmlFor="credential-key">API Key</label>
+                  <input
+                    id="credential-key"
+                    type="password"
+                    autoComplete="new-password"
+                    className="field font-mono"
+                    value={credentialDraft.api_key}
+                    onChange={(event) =>
+                      setCredentialDraft((current) => ({ ...current, api_key: event.target.value }))
+                    }
+                    placeholder="输入后将立即加密，之后不可查看明文"
+                    required
+                  />
+                </div>
+                <div className="flex justify-end gap-2 sm:col-span-2">
+                  <button type="button" className="btn-ghost" onClick={() => setCredentialFormOpen(false)}>
+                    取消
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={createCredential.isPending}>
+                    <ShieldCheck className="size-4" />
+                    加密保存
+                  </button>
+                </div>
+              </form>
+            )}
+            {credentialsQuery.isLoading ? (
+              <EmptyMessage>正在读取密钥...</EmptyMessage>
+            ) : credentials.length === 0 ? (
+              <EmptyMessage>尚未单独保存密钥。添加模型时选择“输入新密钥”也会在这里保存。</EmptyMessage>
+            ) : (
+              <div className="divide-y hairline border-t hairline">
+                {credentials.map((credential) => {
+                  const usedByCount = profiles.filter(
+                    (profile) => profile.credential_id === credential.id,
+                  ).length;
+                  return (
+                    <div key={credential.id} className="px-5 py-4 sm:px-6">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium text-ink-900 dark:text-white">
+                              {credential.profile_label}
+                            </span>
+                            <StatusPill tone="neutral">{credential.provider}</StatusPill>
+                            <StatusPill
+                              tone={
+                                credential.test_status === "valid"
+                                  ? "success"
+                                  : credential.test_status === "invalid"
+                                    ? "warning"
+                                    : "neutral"
+                              }
+                            >
+                              {credential.test_status === "valid"
+                                ? "已验证"
+                                : credential.test_status === "invalid"
+                                  ? "验证失败"
+                                  : "未验证"}
+                            </StatusPill>
+                            {usedByCount > 0 && (
+                              <StatusPill tone="neutral">{`${usedByCount} 个模型使用`}</StatusPill>
+                            )}
+                          </div>
+                          <p className="mt-1 font-mono text-xs text-ink-500">{credential.masked_key}</p>
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            onClick={() => {
+                              setRotateId(credential.id);
+                              setRotateKey("");
+                            }}
+                          >
+                            <RefreshCw className="size-4" />
+                            轮换
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-btn text-cinnabar-600"
+                            title="删除密钥"
+                            aria-label={`删除密钥 ${credential.profile_label}`}
+                            onClick={() => {
+                              if (window.confirm(`确定删除密钥“${credential.profile_label}”吗？`)) {
+                                deleteCredential.mutate(credential.id);
+                              }
+                            }}
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </div>
+                      </div>
+                      {rotateId === credential.id && (
+                        <form
+                          className="mt-4 flex flex-col gap-2 sm:flex-row"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            rotateCredential.mutate({ id: credential.id, apiKey: rotateKey.trim() });
+                          }}
+                        >
+                          <input
+                            type="password"
+                            autoComplete="new-password"
+                            className="field flex-1 font-mono"
+                            value={rotateKey}
+                            onChange={(event) => setRotateKey(event.target.value)}
+                            placeholder="输入新的 API Key"
+                            aria-label={`轮换 ${credential.profile_label} 的 API Key`}
+                            required
+                          />
+                          <button type="submit" className="btn-primary" disabled={rotateCredential.isPending}>
+                            <Save className="size-4" />
+                            保存新密钥
+                          </button>
+                          <button type="button" className="icon-btn" onClick={() => setRotateId(null)}>
+                            <X className="size-4" />
+                            <span className="sr-only">取消轮换</span>
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </details>
       </ServerSection>
 
       <ServerSection

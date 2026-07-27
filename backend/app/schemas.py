@@ -19,6 +19,7 @@ class ProviderConfig(APIModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_concurrency: int | None = Field(default=None, ge=1, le=32)
     context_token_budget: int | None = Field(default=None, ge=100, le=16000)
+    context_segments: int | None = Field(default=None, ge=0, le=12)
     generate_chapter_summaries: bool | None = None
     stream: bool | None = None
 
@@ -31,6 +32,10 @@ class ProjectPatch(APIModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=500)
     provider_cfg: ProviderConfig | None = None
+    # Explicit null clears the assignment and reverts to the fallback behaviour,
+    # so these are distinguished from "absent" via exclude_unset.
+    model_profile_id: int | None = None
+    prompt_template_id: int | None = None
 
     @field_validator("title")
     @classmethod
@@ -71,6 +76,8 @@ class ProjectRead(APIModel):
     target_lang: str
     source_type: str
     provider_cfg: dict[str, Any]
+    model_profile_id: int | None = None
+    prompt_template_id: int | None = None
     status: str
     created_at: str
     updated_at: str
@@ -242,6 +249,163 @@ class BulkActionResult(APIModel):
     translation_started: bool = False
 
 
+class ProviderOption(APIModel):
+    """A provider the admin may configure, described for the settings UI."""
+
+    name: str
+    label: str
+    hint: str = ""
+    # ``custom``/``ollama`` have no fixed endpoint, so a base URL is mandatory.
+    requires_base_url: bool = False
+
+
+class ProviderCredentialCreate(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    provider: str = Field(min_length=1, max_length=64)
+    profile_label: str = Field(min_length=1, max_length=150)
+    # SecretStr keeps the key out of tracebacks, logs and error bodies.
+    api_key: SecretStr = Field(min_length=1, max_length=4096)
+
+
+class ProviderCredentialRotate(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    api_key: SecretStr = Field(min_length=1, max_length=4096)
+
+
+class ProviderCredentialRead(APIModel):
+    """A credential as exposed to the UI. Never carries the secret itself."""
+
+    id: int
+    provider: str
+    profile_label: str
+    configured: bool
+    masked_key: str
+    enabled: bool = True
+    test_status: str
+    last_tested_at: str | None = None
+    last_test_error_code: str | None = None
+    last_test_error_summary: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class ModelProfileBase(APIModel):
+    display_name: str = Field(min_length=1, max_length=150)
+    provider: str = Field(min_length=1, max_length=64)
+    litellm_model_id: str = Field(min_length=1, max_length=255)
+    credential_id: int | None = None
+    base_url: str | None = Field(default=None, max_length=2048)
+    enabled: bool = True
+    is_default: bool = False
+    max_concurrency: int = Field(default=4, ge=1, le=32)
+    context_window_tokens: int = Field(default=128000, ge=1, le=10_000_000)
+    max_output_tokens: int = Field(default=4096, ge=1, le=10_000_000)
+    generation_params: dict[str, Any] = Field(default_factory=dict)
+    input_price_per_million: float | None = Field(default=None, ge=0)
+    output_price_per_million: float | None = Field(default=None, ge=0)
+    cache_read_price_per_million: float | None = Field(default=None, ge=0)
+    cache_write_price_per_million: float | None = Field(default=None, ge=0)
+
+
+class ModelProfileCreate(ModelProfileBase):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+
+class ModelProfilePatch(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=150)
+    provider: str | None = Field(default=None, min_length=1, max_length=64)
+    litellm_model_id: str | None = Field(default=None, min_length=1, max_length=255)
+    credential_id: int | None = None
+    base_url: str | None = Field(default=None, max_length=2048)
+    enabled: bool | None = None
+    is_default: bool | None = None
+    max_concurrency: int | None = Field(default=None, ge=1, le=32)
+    context_window_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
+    generation_params: dict[str, Any] | None = None
+    input_price_per_million: float | None = Field(default=None, ge=0)
+    output_price_per_million: float | None = Field(default=None, ge=0)
+    cache_read_price_per_million: float | None = Field(default=None, ge=0)
+    cache_write_price_per_million: float | None = Field(default=None, ge=0)
+
+
+class ModelProfileRead(ModelProfileBase):
+    id: int
+    # True when a key would travel unencrypted to a non-local host.
+    insecure_transport: bool = False
+    created_at: str
+    updated_at: str
+
+
+class ConnectionTestResult(APIModel):
+    """The outcome of one minimal live request against a model profile.
+
+    Errors are reduced to a stable code plus a short human summary; provider
+    exception text is never forwarded, since it can echo request headers.
+    """
+
+    ok: bool
+    provider: str
+    model: str
+    tested_at: str
+    error_code: str | None = None
+    error_summary: str | None = None
+
+
+class PromptTemplateCreate(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    name: str = Field(min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=500)
+    system_prompt: str = Field(min_length=1, max_length=8000)
+    user_prefix: str | None = Field(default=None, max_length=2000)
+    enabled: bool = True
+    is_default: bool = False
+
+
+class PromptTemplatePatch(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=500)
+    system_prompt: str | None = Field(default=None, min_length=1, max_length=8000)
+    user_prefix: str | None = Field(default=None, max_length=2000)
+    enabled: bool | None = None
+    is_default: bool | None = None
+
+
+class PromptTemplateRead(APIModel):
+    id: int
+    name: str
+    description: str | None = None
+    system_prompt: str
+    user_prefix: str | None = None
+    enabled: bool
+    is_default: bool
+    is_builtin: bool
+    created_at: str
+    updated_at: str
+
+
+class PromptPreviewRequest(APIModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    system_prompt: str | None = Field(default=None, max_length=8000)
+    user_prefix: str | None = Field(default=None, max_length=2000)
+    template_id: int | None = None
+    source_lang: str = Field(default="en", max_length=32)
+    target_lang: str = Field(default="zh-CN", max_length=32)
+
+
+class PromptPreviewResponse(APIModel):
+    rendered: str
+    placeholders: list[str]
+
+
 class PublicSettings(APIModel):
     app_name: str
     app_version: str
@@ -251,6 +415,15 @@ class PublicSettings(APIModel):
     provider_defaults: dict[str, Any]
     suggested_models: list[str]
     segment_max_chars: int
+    # Providers the admin may configure, with UI hints.
+    providers: list[ProviderOption] = Field(default_factory=list)
+    generation_param_keys: list[str] = Field(default_factory=list)
+    prompt_placeholders: list[str] = Field(default_factory=list)
+    # Shown before a connection test, which spends real provider quota.
+    connection_test_notice: str = ""
+    # True when credentials are protected by an auto-generated development key
+    # rather than an operator-managed one; the UI warns in that case.
+    credential_key_is_ephemeral: bool = False
 
 
 class TMStats(APIModel):

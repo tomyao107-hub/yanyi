@@ -14,6 +14,7 @@ frontend/.vite/
 
 # Local configuration and secrets
 .env
+.env.production
 settings.local.toml
 .claude/settings.local.json
 

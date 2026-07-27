@@ -28,6 +28,7 @@ from .schemas import HealthResponse
 from .security.crypto import MASTER_KEY_ENV, CredentialCryptoError, read_master_key_file
 from .security.dependencies import require_authenticated_session
 from .security.sessions import initialize_admin
+from .services.prompts import seed_builtin_templates
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _recover_interrupted_work()
     with session_factory() as session:
         initialize_admin(session)
+        # Ship usable prompt templates so the settings page is never empty.
+        # Existing rows, including admin edits, are left untouched.
+        if seed_builtin_templates(session):
+            session.commit()
 
     # Start the durable job worker so queued jobs execute. SIGTERM/SIGINT are
     # handled by the ASGI server (uvicorn), which runs this lifespan's exit;

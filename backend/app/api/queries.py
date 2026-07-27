@@ -53,6 +53,8 @@ def project_to_read(session: Session, project: Project) -> ProjectRead:
         target_lang=project.target_lang,
         source_type=project.source_type,
         provider_cfg=project.provider_cfg,
+        model_profile_id=project.model_profile_id,
+        prompt_template_id=project.prompt_template_id,
         status=project.status,
         created_at=project.created_at,
         updated_at=project.updated_at,

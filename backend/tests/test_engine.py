@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from sqlmodel import Session
 
-from backend.app.db import create_db_engine, init_db
+from backend.app.db import SCHEMA_HEAD_REVISION, create_db_engine, init_db
 from backend.app.engine import (
     InMemoryTranslationMemory,
     RateLimitCoordinator,
@@ -321,6 +321,6 @@ async def test_cli_pipeline_and_resume(tmp_path: Path) -> None:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
     finally:
         connection.close()
-    assert revision == ("0002_server_foundation",)
+    assert revision == (SCHEMA_HEAD_REVISION,)
     database.unlink()
     assert not database.exists()

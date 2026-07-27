@@ -33,6 +33,7 @@ class Project(SQLModel, table=True):
     __table_args__ = (
         Index("ix_project_source_artifact_id", "source_artifact_id"),
         Index("ix_project_model_profile_id", "model_profile_id"),
+        Index("ix_project_prompt_template_id", "prompt_template_id"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -69,6 +70,18 @@ class Project(SQLModel, table=True):
             ForeignKey(
                 "model_profile.id",
                 name="fk_project_model_profile_id_model_profile",
+                ondelete="SET NULL",
+            ),
+            nullable=True,
+        ),
+    )
+    prompt_template_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "prompt_template.id",
+                name="fk_project_prompt_template_id_prompt_template",
                 ondelete="SET NULL",
             ),
             nullable=True,
@@ -442,6 +455,59 @@ class ModelProfile(SQLModel, table=True):
     cache_write_price_per_million: Decimal | None = Field(
         default=None,
         sa_column=Column(Numeric(18, 6), nullable=True),
+    )
+    created_at: str = Field(default_factory=utc_now, sa_column=Column(Text, nullable=False))
+    updated_at: str = Field(default_factory=utc_now, sa_column=Column(Text, nullable=False))
+
+
+class PromptTemplate(SQLModel, table=True):
+    """A reusable translation prompt, selectable per project."""
+
+    __tablename__ = "prompt_template"
+    __table_args__ = (
+        UniqueConstraint("name_normalized", name="uq_prompt_template_name_normalized"),
+        CheckConstraint("length(trim(name)) > 0", name="ck_prompt_template_name"),
+        CheckConstraint(
+            "length(name_normalized) > 0",
+            name="ck_prompt_template_name_normalized",
+        ),
+        CheckConstraint(
+            "name_normalized = lower(trim(name_normalized))",
+            name="ck_prompt_template_name_canonical",
+        ),
+        CheckConstraint(
+            "length(trim(system_prompt)) > 0",
+            name="ck_prompt_template_system_prompt",
+        ),
+        CheckConstraint("is_default = 0 OR enabled = 1", name="ck_prompt_template_default_enabled"),
+        Index(
+            "uq_prompt_template_single_default",
+            "is_default",
+            unique=True,
+            sqlite_where=text("is_default = 1"),
+        ),
+        Index("ix_prompt_template_enabled", "enabled"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(sa_column=Column(String(150), nullable=False))
+    name_normalized: str = Field(sa_column=Column(String(150), nullable=False))
+    description: str | None = Field(default=None, sa_column=Column(Text))
+    # Supports {source_lang}/{target_lang} placeholders, rendered at run time.
+    system_prompt: str = Field(sa_column=Column(Text, nullable=False))
+    # Optional extra guidance appended to the per-segment user message.
+    user_prefix: str | None = Field(default=None, sa_column=Column(Text))
+    enabled: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, nullable=False, server_default="1"),
+    )
+    is_default: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="0"),
+    )
+    is_builtin: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="0"),
     )
     created_at: str = Field(default_factory=utc_now, sa_column=Column(Text, nullable=False))
     updated_at: str = Field(default_factory=utc_now, sa_column=Column(Text, nullable=False))

@@ -205,6 +205,23 @@ export interface PublicSettings {
   segment_max_chars: number;
 }
 
+export interface AdminUser {
+  id: number;
+  username: string;
+}
+
+export interface AuthSession {
+  authenticated: boolean;
+  admin: AdminUser | null;
+  idle_expires_at?: string;
+  absolute_expires_at?: string;
+}
+
+export interface LoginInput {
+  username: string;
+  password: string;
+}
+
 export interface BatchSegmentInput {
   segment_ids: number[];
   action: "mark_reviewed" | "retranslate";

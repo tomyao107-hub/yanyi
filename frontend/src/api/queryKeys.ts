@@ -1,4 +1,5 @@
 export const queryKeys = {
+  authSession: ["auth", "session"] as const,
   projects: ["projects"] as const,
   project: (id: number) => ["projects", id] as const,
   segments: (id: number, chapterId?: number, status?: string) =>

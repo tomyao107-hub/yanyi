@@ -1,0 +1,21 @@
+services:
+  app:
+    environment:
+      TRANS_ENVIRONMENT: development
+      TRANS_PUBLIC_ORIGIN: http://121.4.28.63:6020
+      TRANS_TRUSTED_HOSTS: '["121.4.28.63","127.0.0.1","localhost","app"]'
+      TRANS_CORS_ORIGINS: '[]'
+      TRANS_DEFAULT_MODEL: ${TRANS_DEFAULT_MODEL:-openai/gemini-3.1-pro-low}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:?Set OPENAI_API_BASE in .env.production}
+      OPENAI_BASE_URL: ${OPENAI_API_BASE:?Set OPENAI_API_BASE in .env.production}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env.production}
+    secrets: !override []
+    volumes: !override
+      - trans-state:/var/lib/trans
+      - /etc/trans/admin-bootstrap-password:/run/secrets/admin_bootstrap_password:ro
+      - /etc/trans/master-key:/run/secrets/master_key:ro
+  caddy:
+    ports: !override
+      - target: 80
+        published: "6020"
+        protocol: tcp

@@ -27,7 +27,7 @@ export interface AppSettings {
 }
 
 export const defaultSettings: AppSettings = {
-  model: "deepseek/deepseek-v4-flash",
+  model: "openai/gemini-3.1-pro-low",
   temperature: 0.3,
   maxConcurrency: 4,
   contextBudget: 1200,
@@ -40,7 +40,7 @@ export const defaultSettings: AppSettings = {
   shortcutsEnabled: true,
 };
 
-const STORAGE_KEY = "inkline:settings:v1";
+const STORAGE_KEY = "inkline:settings:v2";
 
 function readSettings(): AppSettings {
   try {

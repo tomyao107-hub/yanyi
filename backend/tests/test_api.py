@@ -15,7 +15,7 @@ from backend.app.api import adapters
 from backend.app.api.runtime import event_broker, translation_tasks
 from backend.app.api.stream import _replay_events
 from backend.app.config import REPOSITORY_ROOT, Settings, get_settings
-from backend.app.db import get_session, migrate_db
+from backend.app.db import SCHEMA_HEAD_REVISION, get_session, migrate_db
 from backend.app.main import create_app
 from backend.app.models import AdminUser, Segment, TMEntry, utc_now
 from backend.app.providers.base import TranslationResult
@@ -83,6 +83,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestCli
     monkeypatch.setattr("backend.app.main.migrate_db", lambda: None)
     monkeypatch.setattr("backend.app.main._recover_interrupted_work", lambda: None)
     monkeypatch.setattr("backend.app.main.initialize_admin", lambda session: False)
+    # Startup seeding runs against the global engine; these tests own their own
+    # database, so seed explicitly where a test needs templates.
+    monkeypatch.setattr("backend.app.main.seed_builtin_templates", lambda session: 0)
     # The login limiter is process-global; give each test a fresh bucket so
     # fixture logins across the suite don't trip it.
     monkeypatch.setattr(
@@ -129,6 +132,7 @@ def anonymous_client(
     monkeypatch.setattr("backend.app.main.migrate_db", lambda: None)
     monkeypatch.setattr("backend.app.main._recover_interrupted_work", lambda: None)
     monkeypatch.setattr("backend.app.main.initialize_admin", lambda session: False)
+    monkeypatch.setattr("backend.app.main.seed_builtin_templates", lambda session: 0)
     with TestClient(app) as test_client:
         yield test_client
 
@@ -141,6 +145,19 @@ def upload_markdown(client: TestClient) -> dict[str, object]:
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_upload_accepts_context_segments_provider_config(client: TestClient) -> None:
+    response = client.post(
+        "/api/projects",
+        files={"file": ("sample.md", b"# Chapter\n\nHello New York.")},
+        data={
+            "title": "Context Settings",
+            "provider_cfg": '{"model":"mock/model","context_segments":3}',
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["provider_cfg"]["context_segments"] == 3
 
 
 def test_health_settings_and_project_crud(client: TestClient) -> None:
@@ -530,7 +547,7 @@ def test_alembic_initial_revision_is_stamped(
             ).fetchone()
         finally:
             connection.close()
-        assert version == ("0002_server_foundation",)
+        assert version == (SCHEMA_HEAD_REVISION,)
         command.check(config)
         command.downgrade(config, "base")
     finally:
@@ -554,7 +571,7 @@ def test_migrate_db_adopts_complete_unversioned_sqlmodel_schema(
         ).fetchone()
     finally:
         connection.close()
-    assert version == ("0002_server_foundation",)
+    assert version == (SCHEMA_HEAD_REVISION,)
     database = tmp_path / "partial.db"
     connection = sqlite3.connect(database)
     try:

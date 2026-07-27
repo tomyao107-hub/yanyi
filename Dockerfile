@@ -12,7 +12,9 @@ RUN npm run build
 
 
 FROM python:3.12-slim-bookworm AS python-build
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com
 WORKDIR /build
 
 COPY pyproject.toml requirements.lock README.md ./
@@ -24,7 +26,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 FROM python:3.12-slim-bookworm AS python-dependencies
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 RUN python -m venv "$VIRTUAL_ENV"
 WORKDIR /build

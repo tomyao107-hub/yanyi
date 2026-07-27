@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from sqlmodel import Session, select
 
-from ..models import AuditEvent, ModelProfile, ProviderCredential, utc_now
+from ..models import AuditEvent, ModelProfile, Project, ProviderCredential, utc_now
 from ..providers import LiteLLMProvider
 from ..security.crypto import (
     CredentialCryptoError,
@@ -30,35 +30,37 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-ai": "gemini",
     "google_ai": "gemini",
+    "openai_compatible": "custom",
+    "openai-compatible": "custom",
+    "compatible": "custom",
 }
-_PROVIDER_MODEL_RULES: dict[str, tuple[re.Pattern[str], ...]] = {
-    "anthropic": (
-        re.compile(r"^(?:anthropic/)?claude-[a-z0-9][a-z0-9._-]*$", re.I),
-    ),
-    "openai": (
-        re.compile(r"^(?:openai/)?(?:gpt|o[134])-[a-z0-9][a-z0-9._-]*$", re.I),
-    ),
-    "gemini": (
-        re.compile(r"^(?:gemini/)?gemini-[a-z0-9][a-z0-9._-]*$", re.I),
-    ),
-    "deepseek": (
-        re.compile(r"^(?:deepseek/)?deepseek-[a-z0-9][a-z0-9._-]*$", re.I),
-    ),
-    "ollama": (
-        re.compile(r"^ollama/[a-z0-9][a-z0-9._:/-]*$", re.I),
-    ),
-    "openrouter": (
-        re.compile(r"^openrouter/[a-z0-9][a-z0-9._:/-]*$", re.I),
-    ),
+
+# Providers the admin may configure. ``custom`` covers any OpenAI-compatible
+# endpoint (relays, aggregators, self-hosted vLLM/LM Studio, ...), which is why
+# it carries no host or model-name expectations at all.
+SUPPORTED_PROVIDERS: tuple[str, ...] = (
+    "openai",
+    "anthropic",
+    "gemini",
+    "deepseek",
+    "openrouter",
+    "ollama",
+    "custom",
+)
+
+# LiteLLM routes on a model prefix. A profile whose provider implies a prefix
+# gets it applied automatically when the admin omits it.
+_PROVIDER_MODEL_PREFIX: dict[str, str] = {
+    "gemini": "gemini/",
+    "deepseek": "deepseek/",
+    "ollama": "ollama/",
+    "openrouter": "openrouter/",
 }
-_PROVIDER_HOSTS: dict[str, frozenset[str]] = {
-    "anthropic": frozenset({"api.anthropic.com"}),
-    "openai": frozenset({"api.openai.com"}),
-    "gemini": frozenset({"generativelanguage.googleapis.com"}),
-    "deepseek": frozenset({"api.deepseek.com"}),
-    "openrouter": frozenset({"openrouter.ai"}),
-    "ollama": frozenset({"127.0.0.1", "localhost", "::1"}),
-}
+
+# Model IDs are free-form because third-party gateways publish arbitrary names.
+# This only rejects values that could not be a model identifier at all.
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,254}$")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 _GENERATION_PARAM_KEYS = frozenset(
     {
         "cache",
@@ -83,6 +85,9 @@ _GENERATION_PARAM_KEYS = frozenset(
     }
 )
 _SECRETISH_PARAM_RE = re.compile(r"(?:api[_-]?key|secret|token|authorization|password)", re.I)
+
+# Sorted for a stable UI listing of what the profile editor accepts.
+GENERATION_PARAM_KEYS: tuple[str, ...] = tuple(sorted(_GENERATION_PARAM_KEYS))
 
 
 class ProviderConfigurationError(ValueError):
@@ -110,8 +115,9 @@ class ProviderRuntime:
 
 
 def normalize_provider(provider: str) -> str:
-    normalized = _PROVIDER_ALIASES.get(provider.strip().casefold(), provider.strip().casefold())
-    if normalized not in _PROVIDER_MODEL_RULES:
+    folded = provider.strip().casefold()
+    normalized = _PROVIDER_ALIASES.get(folded, folded)
+    if normalized not in SUPPORTED_PROVIDERS:
         raise ProviderConfigurationError("Unsupported provider")
     return normalized
 
@@ -124,41 +130,69 @@ def normalize_profile_label(label: str) -> tuple[str, str]:
 
 
 def validate_model_id(provider: str, model_id: str) -> str:
+    """Validate a model ID and apply the provider's LiteLLM routing prefix.
+
+    Model names are not allowlisted: third-party gateways expose arbitrary
+    identifiers, and a fixed list would silently reject valid models every
+    time a provider ships one.
+    """
+
     normalized_provider = normalize_provider(provider)
     value = model_id.strip()
-    if not value or len(value) > 255 or any(char.isspace() for char in value):
+    if not _MODEL_ID_RE.fullmatch(value):
         raise ProviderConfigurationError("Invalid model ID")
-    if not any(rule.fullmatch(value) for rule in _PROVIDER_MODEL_RULES[normalized_provider]):
-        raise ProviderConfigurationError("Model ID is not allowlisted for this provider")
+    prefix = _PROVIDER_MODEL_PREFIX.get(normalized_provider)
+    if prefix and "/" not in value:
+        value = f"{prefix}{value}"
     return value
 
 
 def validate_base_url(provider: str, base_url: str | None) -> str | None:
+    """Normalize an admin-supplied endpoint.
+
+    Any host is permitted so custom relays and self-hosted gateways work. The
+    checks that remain are the ones that cost no flexibility: http/https only,
+    and no inline credentials, query, or fragment (which would leak into logs
+    and cannot be re-edited safely from a masked UI).
+    """
+
     if base_url is None or not base_url.strip():
         return None
-    normalized_provider = normalize_provider(provider)
+    normalize_provider(provider)  # Reject unknown providers before storing a URL.
     parsed = urlsplit(base_url.strip())
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ProviderConfigurationError(
             "Base URL must not include credentials, query, or fragment"
         )
-    expected_scheme = "http" if normalized_provider == "ollama" else "https"
-    if parsed.scheme.casefold() != expected_scheme or not parsed.hostname:
-        raise ProviderConfigurationError(
-            f"Base URL for {normalized_provider} must use {expected_scheme}"
-        )
+    scheme = parsed.scheme.casefold()
+    if scheme not in {"http", "https"} or not parsed.hostname:
+        raise ProviderConfigurationError("Base URL must be an http(s) URL with a host")
     host = parsed.hostname.casefold().rstrip(".")
-    if host not in _PROVIDER_HOSTS[normalized_provider]:
-        raise ProviderConfigurationError("Base URL host is not allowlisted for this provider")
-    if normalized_provider != "ollama" and parsed.port not in (None, 443):
-        raise ProviderConfigurationError("Remote provider base URLs must use port 443")
-    normalized_netloc = host
-    if ":" in host and not host.startswith("["):
-        normalized_netloc = f"[{host}]"
+    if not host:
+        raise ProviderConfigurationError("Base URL must include a host")
+    normalized_netloc = f"[{host}]" if ":" in host and not host.startswith("[") else host
     if parsed.port is not None:
+        if not 1 <= parsed.port <= 65535:
+            raise ProviderConfigurationError("Base URL port is invalid")
         normalized_netloc += f":{parsed.port}"
     path = parsed.path.rstrip("/")
-    return urlunsplit((expected_scheme, normalized_netloc, path, "", ""))
+    return urlunsplit((scheme, normalized_netloc, path, "", ""))
+
+
+def base_url_is_plaintext_remote(base_url: str | None) -> bool:
+    """Report whether a URL would send a key unencrypted off-host.
+
+    Callers surface this as a warning; loopback http (Ollama, LM Studio) is
+    normal and not flagged.
+    """
+
+    if not base_url:
+        return False
+    parsed = urlsplit(base_url)
+    if parsed.scheme.casefold() != "http":
+        return False
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    return bool(host) and host not in _LOOPBACK_HOSTS
 
 
 def validate_generation_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -665,6 +699,42 @@ def create_provider_for_profile(
     return build_provider_runtime(session, profile_id, master_key=master_key).provider
 
 
+def default_profile_id(session: Session) -> int | None:
+    """Return the enabled default model profile's ID, if one is configured."""
+
+    return session.exec(
+        select(ModelProfile.id).where(
+            ModelProfile.is_default.is_(True),
+            ModelProfile.enabled.is_(True),
+        )
+    ).first()
+
+
+def resolve_project_runtime(
+    session: Session,
+    project: Project,
+    *,
+    master_key: bytes | None = None,
+) -> ProviderRuntime | None:
+    """Resolve a project's model profile, or ``None`` to use ambient env keys.
+
+    Only an explicitly assigned profile is honoured. A project created before
+    profiles existed keeps its previous behaviour (LiteLLM reading provider
+    environment variables) instead of being silently repointed at a new
+    endpoint and credential.
+    """
+
+    if project.model_profile_id is None:
+        return None
+    # A deleted, disabled or undecryptable profile propagates its error rather
+    # than quietly translating through an unintended provider.
+    return build_provider_runtime(
+        session,
+        project.model_profile_id,
+        master_key=master_key,
+    )
+
+
 async def run_connection_test(
     runtime: ProviderRuntime,
     *,
@@ -742,19 +812,24 @@ def rotate_credentials_from_files(
 __all__ = [
     "CONNECTION_TEST_NOTICE",
     "CONNECTION_TEST_TIMEOUT_SECONDS",
+    "GENERATION_PARAM_KEYS",
+    "SUPPORTED_PROVIDERS",
     "CredentialNotFoundError",
     "ModelProfileNotFoundError",
     "ProviderConfigurationError",
     "ProviderCredentialService",
     "ProviderRuntime",
     "add_audit_event",
+    "base_url_is_plaintext_remote",
     "build_provider_runtime",
     "create_provider_for_profile",
     "credential_read_dto",
     "decrypt_credential",
+    "default_profile_id",
     "mask_credential",
     "model_profile_read_dto",
     "normalize_provider",
+    "resolve_project_runtime",
     "rotate_credentials",
     "rotate_credentials_from_files",
     "run_connection_test",

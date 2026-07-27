@@ -449,6 +449,20 @@ class Translator:
                 MAX_TRANSLATION_CONCURRENCY,
                 max(1, int(cfg.get("max_concurrency", 4))),
             )
+            # Imported here: services.prompts reads engine.prompt, so a
+            # module-level import would close an import cycle.
+            from ..services.prompts import resolve_project_prompt
+            from ..services.providers import resolve_project_runtime
+
+            # A configured model profile owns the endpoint, credential and model
+            # ID. Without one, fall back to the ambient-environment provider so
+            # existing deployments keep working unchanged.
+            runtime = resolve_project_runtime(session, project)
+            if runtime is not None:
+                model = runtime.model
+                max_concurrency = min(MAX_TRANSLATION_CONCURRENCY, runtime.max_concurrency)
+            active_provider = runtime.provider if runtime is not None else self.provider
+            system_prompt = resolve_project_prompt(session, project)
             context_tokens = max(
                 128,
                 int(cfg.get("context_token_budget", cfg.get("context_tokens", 1200))),
@@ -508,7 +522,6 @@ class Translator:
         stats_lock = asyncio.Lock()
         hash_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         rate_limit = RateLimitCoordinator()
-        system_prompt = build_system_prompt(source_lang, target_lang)
         context_builder = ContextBuilder(
             max_tokens=context_tokens,
             previous_count=previous_count,
@@ -570,7 +583,7 @@ class Translator:
                     continue
                 try:
                     result = await translate_with_retry(
-                        self.provider,
+                        active_provider,
                         source,
                         system_prompt=(
                             "你是一名书籍编辑。请用简体中文概括下面章节的关键人物、"
@@ -796,7 +809,7 @@ class Translator:
                                     )
 
                                 provider_result = await stream_with_retry(
-                                    self.provider,
+                                    active_provider,
                                     protected.text,
                                     system_prompt=system_prompt,
                                     context=segment.context,
@@ -809,7 +822,7 @@ class Translator:
                                 )
                             else:
                                 provider_result = await translate_with_retry(
-                                    self.provider,
+                                    active_provider,
                                     protected.text,
                                     system_prompt=system_prompt,
                                     context=segment.context,

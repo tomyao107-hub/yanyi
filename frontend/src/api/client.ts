@@ -3,7 +3,9 @@ import type {
   CostEstimate,
   ExportOptions,
   ExportResult,
+  AuthSession,
   GlossaryTerm,
+  LoginInput,
   Project,
   ProjectDetail,
   PublicSettings,
@@ -16,6 +18,9 @@ import type {
 } from "./types";
 
 const API_ROOT = "/api";
+const CSRF_COOKIE_NAME = "trans_csrf";
+const CSRF_HEADER_NAME = "X-CSRF-Token";
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 export class ApiError extends Error {
   status: number;
@@ -54,10 +59,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+  const method = (init?.method ?? "GET").toUpperCase();
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken && UNSAFE_METHODS.has(method) && !headers.has(CSRF_HEADER_NAME)) {
+    headers.set(CSRF_HEADER_NAME, csrfToken);
+  }
 
   const response = await fetch(`${API_ROOT}${path}`, {
     ...init,
     headers,
+    credentials: "same-origin",
   });
 
   if (response.status === 204) return undefined as T;
@@ -74,6 +85,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   return payload as T;
+}
+
+function readCookie(name: string): string | null {
+  const prefix = `${encodeURIComponent(name)}=`;
+  return document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length) ?? null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -133,6 +153,28 @@ function queryString(params: Record<string, string | number | undefined>): strin
 }
 
 export const api = {
+  async authSession(): Promise<AuthSession> {
+    try {
+      return await request<AuthSession>("/auth/session");
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        return { authenticated: false, admin: null };
+      }
+      throw error;
+    }
+  },
+
+  async login(input: LoginInput): Promise<AuthSession> {
+    return request<AuthSession>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  async logout(): Promise<void> {
+    await request<void>("/auth/logout", { method: "POST" });
+  },
+
   async runtimeSettings(): Promise<PublicSettings> {
     return request<PublicSettings>("/settings");
   },

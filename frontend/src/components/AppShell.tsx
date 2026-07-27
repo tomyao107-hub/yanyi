@@ -1,5 +1,9 @@
-import { BookOpenText, LibraryBig, Settings2 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { BookOpenText, LibraryBig, LogOut, Settings2 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { api } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
+import { LoginPage } from "../pages/LoginPage";
 
 const navigation = [
   { to: "/", label: "书库", icon: LibraryBig, end: true },
@@ -8,7 +12,39 @@ const navigation = [
 
 export function AppShell() {
   const location = useLocation();
+  const queryClient = useQueryClient();
   const isWorkbench = location.pathname.startsWith("/projects/");
+  const sessionQuery = useQuery({
+    queryKey: queryKeys.authSession,
+    queryFn: api.authSession,
+    staleTime: 30_000,
+  });
+  const logout = useMutation({
+    mutationFn: api.logout,
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.authSession });
+      void queryClient.removeQueries({ queryKey: queryKeys.projects });
+    },
+  });
+
+  if (sessionQuery.isLoading) {
+    return (
+      <div className="grid min-h-screen place-items-center">
+        <span className="size-8 animate-spin rounded-full border-2 border-ink-200 border-t-cinnabar-700 dark:border-ink-700 dark:border-t-cinnabar-400" />
+      </div>
+    );
+  }
+
+  if (!sessionQuery.data?.authenticated) {
+    return (
+      <LoginPage
+        onAuthenticated={() => {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.authSession });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen">
@@ -56,6 +92,16 @@ export function AppShell() {
                 <span>{label}</span>
               </NavLink>
             ))}
+            <button
+              type="button"
+              className="icon-btn ml-1"
+              onClick={() => logout.mutate()}
+              disabled={logout.isPending}
+              aria-label="退出登录"
+              title="退出登录"
+            >
+              <LogOut className="size-4" />
+            </button>
           </nav>
         </div>
       </header>

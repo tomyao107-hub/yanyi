@@ -22,6 +22,7 @@ import {
 import { useToast } from "../store/toast";
 
 const suggestedModels = [
+  "openai/gemini-3.1-pro-low",
   "deepseek/deepseek-v4-flash",
   "openai/gpt-5-mini",
   "openai/gpt-5.4-mini",

@@ -10,6 +10,11 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from .config import REPOSITORY_ROOT, get_settings
 
+# Revision an unversioned-but-current database is adopted at. Bump this together
+# with every new head revision, otherwise adoption stamps a stale version and
+# the next upgrade replays migrations against existing tables.
+SCHEMA_HEAD_REVISION = "0003_prompt_templates"
+
 
 def create_db_engine(database_url: str | None = None, *, echo: bool | None = None) -> Engine:
     settings = get_settings()
@@ -230,7 +235,7 @@ def migrate_db(database_url: str | None = None) -> None:
             if not current_mismatches:
                 # A complete database created by the current SQLModel metadata
                 # (e.g. init_db or an embedded build) is adopted at head.
-                command.stamp(config, "0002_server_foundation")
+                command.stamp(config, SCHEMA_HEAD_REVISION)
             else:
                 legacy_mismatches = _schema_mismatches(
                     inspector, business_tables, legacy_expected

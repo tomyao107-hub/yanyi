@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -32,12 +33,20 @@ from .services.prompts import seed_builtin_templates
 
 logger = logging.getLogger(__name__)
 
+# Vite emits content-hashed bundles under assets/; those names are unique per
+# build, so they can be cached as immutable. Everything else must be
+# revalidated so a deployed build is picked up promptly.
+_HASHED_ASSET_RE = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8}\.(?:js|css)$")
+
 
 class SPAStaticFiles(StaticFiles):
     @staticmethod
     def _set_cache_headers(response: Response, path: str) -> Response:
         if path in {"", ".", "index.html"}:
             response.headers["Cache-Control"] = "no-store"
+            return response
+        if _HASHED_ASSET_RE.match(path):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
             return response
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response

@@ -44,6 +44,15 @@ export function StartTranslationDialog({
     staleTime: 30_000,
     retry: false,
   });
+  const profilesQuery = useQuery({
+    queryKey: ["settings", "model-profiles"],
+    queryFn: () => api.modelProfiles(),
+    enabled: open && project.model_profile_id != null,
+    staleTime: 60_000,
+  });
+  const activeProfile = profilesQuery.data?.find(
+    (profile) => profile.id === project.model_profile_id,
+  );
   const estimate = estimateQuery.data;
   const tokens = estimate?.estimated_tokens ?? estimate?.estimated_total_tokens ?? (
     Number(estimate?.token_in ?? estimate?.estimated_input_tokens ?? 0) +
@@ -78,8 +87,13 @@ export function StartTranslationDialog({
             <Sparkles className="size-3.5" />
             当前模型
           </div>
-          <p className="mt-2 truncate font-mono text-sm font-medium text-ink-900 dark:text-white" title={String(project.provider_cfg.model ?? "")}>
-            {String(project.provider_cfg.model ?? "后端默认模型")}
+          <p
+            className="mt-2 truncate font-mono text-sm font-medium text-ink-900 dark:text-white"
+            title={activeProfile?.display_name ?? String(project.provider_cfg.model ?? "")}
+          >
+            {activeProfile
+              ? activeProfile.display_name
+              : String(project.provider_cfg.model ?? "后端默认模型")}
           </p>
         </div>
         <div className="rounded-xl border hairline bg-ink-50/70 p-4 dark:bg-ink-950/30">
@@ -278,20 +292,51 @@ export function ProjectConfigDialog({
   project: Project;
   pending: boolean;
   onClose: () => void;
-  onSave: (config: ProviderConfig) => void;
+  onSave: (config: {
+    provider_cfg: ProviderConfig;
+    model_profile_id: number | null;
+    prompt_template_id: number | null;
+  }) => void;
 }) {
   const [draft, setDraft] = useState<ProviderConfig>(project.provider_cfg);
+  const [modelProfileId, setModelProfileId] = useState<number | null>(
+    project.model_profile_id ?? null,
+  );
+  const [promptTemplateId, setPromptTemplateId] = useState<number | null>(
+    project.prompt_template_id ?? null,
+  );
+
+  const profilesQuery = useQuery({
+    queryKey: ["settings", "model-profiles"],
+    queryFn: () => api.modelProfiles(),
+    enabled: open,
+    staleTime: 30_000,
+  });
+  const templatesQuery = useQuery({
+    queryKey: ["settings", "prompt-templates"],
+    queryFn: () => api.promptTemplates(),
+    enabled: open,
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
-    if (open) setDraft(project.provider_cfg);
-  }, [open, project.provider_cfg]);
+    if (open) {
+      setDraft(project.provider_cfg);
+      setModelProfileId(project.model_profile_id ?? null);
+      setPromptTemplateId(project.prompt_template_id ?? null);
+    }
+  }, [open, project.provider_cfg, project.model_profile_id, project.prompt_template_id]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     onSave({
-      ...draft,
-      generate_chapter_summaries: draft.generate_chapter_summaries ?? true,
-      stream: draft.stream ?? true,
+      provider_cfg: {
+        ...draft,
+        generate_chapter_summaries: draft.generate_chapter_summaries ?? true,
+        stream: draft.stream ?? true,
+      },
+      model_profile_id: modelProfileId,
+      prompt_template_id: promptTemplateId,
     });
   };
 
@@ -312,6 +357,51 @@ export function ProjectConfigDialog({
       }
     >
       <form id="project-config-form" className="space-y-5" onSubmit={submit}>
+        <div className="space-y-3 rounded-xl border hairline bg-ink-50/60 p-3 dark:bg-ink-900/40">
+          <div className="text-xs font-semibold text-ink-500">服务端配置</div>
+          <div>
+            <label className="field-label" htmlFor="project-profile">模型配置</label>
+            <select
+              id="project-profile"
+              className="field"
+              value={modelProfileId ?? ""}
+              onChange={(event) =>
+                setModelProfileId(event.target.value ? Number(event.target.value) : null)
+              }
+            >
+              <option value="">跟随后端默认（环境变量）</option>
+              {profilesQuery.data
+                ?.filter((profile) => profile.enabled)
+                .map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.display_name}
+                    {profile.is_default ? "（默认）" : ""}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div>
+            <label className="field-label" htmlFor="project-template">提示词模板</label>
+            <select
+              id="project-template"
+              className="field"
+              value={promptTemplateId ?? ""}
+              onChange={(event) =>
+                setPromptTemplateId(event.target.value ? Number(event.target.value) : null)
+              }
+            >
+              <option value="">跟随后端默认模板</option>
+              {templatesQuery.data
+                ?.filter((template) => template.enabled)
+                .map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                    {template.is_default ? "（默认）" : ""}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
         <div>
           <label className="field-label" htmlFor="project-model">模型</label>
           <div className="relative">

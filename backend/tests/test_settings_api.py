@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Generator
 from pathlib import Path
@@ -75,10 +76,13 @@ def client(
     monkeypatch.setattr(
         "backend.app.security.sessions.login_token_bucket", LoginTokenBucket()
     )
-    # The durable job worker is process-global; point it at this database.
+    # The durable job worker is process-global; point it at this database and
+    # detach any worker/wake event left bound to a previous test's loop.
     from backend.app.jobs.manager import job_manager
 
     job_manager._session = lambda: Session(engine)
+    job_manager._wake = asyncio.Event()
+    job_manager._worker = None
     with TestClient(app) as test_client:
         response = test_client.post(
             "/api/auth/login",

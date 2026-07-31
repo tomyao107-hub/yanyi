@@ -47,6 +47,8 @@ export interface Project {
   source_type: "epub" | "md" | string;
   status: ProjectStatus;
   provider_cfg: ProviderConfig;
+  model_profile_id?: number | null;
+  prompt_template_id?: number | null;
   created_at?: string;
   updated_at?: string;
   total?: number;

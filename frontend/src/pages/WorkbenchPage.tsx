@@ -125,6 +125,15 @@ export function WorkbenchPage() {
   });
 
   const project = projectQuery.data;
+  const profilesQuery = useQuery({
+    queryKey: queryKeys.modelProfiles,
+    queryFn: () => api.modelProfiles(),
+    enabled: Boolean(project?.model_profile_id),
+    staleTime: 60_000,
+  });
+  const activeProfile = profilesQuery.data?.find(
+    (profile) => profile.id === project?.model_profile_id,
+  );
   const segmentsQuery = useInfiniteQuery({
     queryKey: queryKeys.segments(projectId, chapterId, status),
     queryFn: ({ pageParam }) =>
@@ -359,8 +368,16 @@ export function WorkbenchPage() {
   });
 
   const configMutation = useMutation({
-    mutationFn: (provider_cfg: ProviderConfig) =>
-      api.updateProject(projectId, { provider_cfg }),
+    mutationFn: (config: {
+      provider_cfg: ProviderConfig;
+      model_profile_id: number | null;
+      prompt_template_id: number | null;
+    }) =>
+      api.updateProject(projectId, {
+        provider_cfg: config.provider_cfg,
+        model_profile_id: config.model_profile_id,
+        prompt_template_id: config.prompt_template_id,
+      }),
     onSuccess: () => {
       setConfigOpen(false);
       void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
@@ -558,7 +575,10 @@ export function WorkbenchPage() {
               ) : null}
             </div>
             <p className="mt-0.5 truncate text-[11px] text-ink-400">
-              {project.source_type.toUpperCase()} · {project.source_lang} → {project.target_lang} · {String(project.provider_cfg.model ?? "默认模型")}
+              {project.source_type.toUpperCase()} · {project.source_lang} → {project.target_lang} ·{" "}
+              {activeProfile
+                ? activeProfile.display_name
+                : String(project.provider_cfg.model ?? "默认模型")}
             </p>
           </div>
 
@@ -625,12 +645,12 @@ export function WorkbenchPage() {
             </select>
             <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-400" />
           </div>
-          {chapterId !== undefined && !isTranslating ? (
+          {chapterId !== undefined ? (
             <button
               type="button"
-              className="btn-secondary min-h-9 whitespace-nowrap px-2.5 py-1.5 text-xs"
+              className="btn-secondary min-h-9 whitespace-nowrap px-2.5 py-1.5 text-xs disabled:cursor-not-allowed"
               onClick={() => startMutation.mutate({ chapter_id: chapterId })}
-              disabled={startMutation.isPending || project.status === "parsing"}
+              disabled={startMutation.isPending || project.status === "parsing" || isTranslating}
               title="仅翻译本章的待处理段落，不影响已有译文"
             >
               <Play className="size-3.5 fill-current" />

@@ -324,7 +324,12 @@ export const api = {
 
   async updateProject(
     id: number,
-    patch: { title?: string; provider_cfg?: Project["provider_cfg"] },
+    patch: {
+      title?: string;
+      provider_cfg?: Project["provider_cfg"];
+      model_profile_id?: number | null;
+      prompt_template_id?: number | null;
+    },
   ): Promise<Project> {
     return normalizeProject(
       await request<unknown>(`/projects/${id}`, {

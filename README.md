@@ -120,21 +120,30 @@ JSON 容器日志启用大小与文件数轮换；Caddy 访问日志删除完整
 
 ### 当前生产集成门禁
 
-部署文件已经预留以下变量，但在对应后端能力落地前不能据此声称系统安全：
+以下能力已落地并由 Compose 按生产约定提供；上线前仍需完成下方列出的运维与安全验证：
 
-- `TRANS_ADMIN_BOOTSTRAP_PASSWORD_FILE`：后端尚无管理员首次启动/登录流程，当前仅由入口
-  脚本验证 secret 文件；不会创建管理员。
-- `TRANS_MASTER_KEY_FILE`：后端尚未读取主密钥，也尚未用它加密 provider 凭据或其他
-  敏感数据；当前仅验证 secret 文件。
+- 管理员首次启动引导：数据库无管理员时，`initialize_admin` 从
+  `TRANS_ADMIN_BOOTSTRAP_PASSWORD_FILE`（Docker secret）读取密码创建唯一管理员；
+  一旦存在管理员，该文件会被忽略，旧部署 secret 无法静默重置账号。登录后请立即修改
+  默认引导密码。
+- 凭据加密：`TRANS_MASTER_KEY_FILE`（精确 32 原始字节的 secret 文件）由后端读取，
+  用 AES-GCM 加密 Provider API Key（AAD 绑定凭据 ID、Provider 与密钥版本），API 只
+  返回掩码。开发环境未配置主密钥时会在状态目录自动生成临时密钥，生产环境必须显式
+  配置。
 - `TRANS_ENVIRONMENT=production`、绝对 `TRANS_STATE_DIR`、`TRANS_FRONTEND_DIST`、
   `TRANS_PUBLIC_ORIGIN`、exact `TRANS_TRUSTED_HOSTS`、空 CORS 与
-  `TRANS_RUN_MIGRATIONS_ON_STARTUP=false` 已由 Compose 按生产约定提供。入口脚本是生产
-  环境唯一迁移者，应用进程不会再次执行迁移；保持单副本且不要使用 `--scale app`。
+  `TRANS_RUN_MIGRATIONS_ON_STARTUP=false` 已由 Compose 提供。入口脚本是生产环境
+  唯一迁移者，应用进程不会再次执行迁移；保持单副本且不要使用 `--scale app`。
 - 反向代理信任范围默认保持为 `127.0.0.1` 占位值。部署时应给 Compose 网络固定子网并将
   `TRANS_FORWARDED_ALLOW_IPS` 收窄到 Caddy 地址或可信 CIDR，之后再依赖客户端 IP 做安全
   判断。
-- 必须补齐认证/授权、CSRF 与安全会话、暴力破解防护、管理员恢复、审计、secret 轮换、
-  备份恢复、依赖和镜像扫描，再进行公网暴露评审。
+
+上线前必须补齐的运维验证（代码已实现，但需演练确认）：
+
+- 主密钥备份与轮换恢复演练：密钥丢失后已存凭据将无法解密。
+- 管理员密码修改与恢复路径、登录限流与会话失效策略的实际验证。
+- 登录失败限流、审计日志保留与访问控制、备份与恢复演练。
+- 依赖与镜像扫描、`compose.6020.yml` 等非标准覆盖配置的移除或加固。
 
 ## 运行时数据
 

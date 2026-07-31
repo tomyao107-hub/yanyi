@@ -15,7 +15,16 @@ from sqlmodel import Session, select
 
 from ..config import Settings, get_settings
 from ..db import get_session
-from ..models import Chapter, Project, Segment, StoredArtifact, utc_now
+from ..engine.translator import collect_segment_ids_in_chunks
+from ..models import (
+    Chapter,
+    ModelProfile,
+    Project,
+    PromptTemplate,
+    Segment,
+    StoredArtifact,
+    utc_now,
+)
 from ..parsers.epub_parser import validate_epub_archive
 from ..qa import run_project_qa
 from ..schemas import (
@@ -30,6 +39,7 @@ from ..schemas import (
     TaskState,
     TranslateRequest,
 )
+from ..services.providers import default_profile_id
 from ..storage import StorageError, StorageService, UploadTooLarge
 from .adapters import export_project_file, parse_and_persist_project, run_project_translation
 from .queries import project_to_detail, project_to_read
@@ -205,6 +215,9 @@ async def create_project(
         source_path=str(stored.path),
         source_artifact_id=artifact.id,
         provider_cfg=config,
+        # New books follow the enabled default model profile so an admin can
+        # switch providers without editing every project afterwards.
+        model_profile_id=default_profile_id(session),
         status="parsing",
     )
     session.add(project)
@@ -284,9 +297,25 @@ def update_project(
 ) -> ProjectDetail:
     project = _project_or_404(session, project_id)
     changes = patch.model_dump(exclude_unset=True)
+    # Explicit IDs must point at existing, enabled objects so a project can
+    # never silently translate through a deleted or paused configuration.
+    if "model_profile_id" in changes and changes["model_profile_id"] is not None:
+        profile = session.get(ModelProfile, changes["model_profile_id"])
+        if profile is None:
+            raise HTTPException(status_code=422, detail="Model profile not found")
+        if not profile.enabled:
+            raise HTTPException(status_code=422, detail="Model profile is disabled")
+    if "prompt_template_id" in changes and changes["prompt_template_id"] is not None:
+        template = session.get(PromptTemplate, changes["prompt_template_id"])
+        if template is None:
+            raise HTTPException(status_code=422, detail="Prompt template not found")
+        if not template.enabled:
+            raise HTTPException(status_code=422, detail="Prompt template is disabled")
     provider_cfg = changes.pop("provider_cfg", None)
     for key, value in changes.items():
-        if value is not None:
+        # An explicit null clears a profile/template assignment and reverts to
+        # the fallback behaviour; other nullable fields ignore null.
+        if value is not None or key in ("model_profile_id", "prompt_template_id"):
             setattr(project, key, value)
     if provider_cfg is not None:
         if isinstance(provider_cfg, ProviderConfig):
@@ -390,26 +419,22 @@ async def start_translation(
             raise HTTPException(status_code=404, detail="Chapter not found")
 
     eligible_statuses = ["pending", "error"] if request.retry_errors else ["pending"]
-    filters = [
-        Segment.project_id == project_id,
-        Segment.status.in_(eligible_statuses),
-    ]
-    if request.chapter_id is not None:
-        filters.append(Segment.chapter_id == request.chapter_id)
-    if request.segment_ids is not None:
-        filters.append(Segment.id.in_(request.segment_ids))
-
     if scoped:
         # Resolve the concrete queue up front so a restart replays exactly the
         # same segments, and so the response can report the real count.
-        eligible_ids = [
-            int(segment_id)
-            for segment_id in session.exec(
-                select(Segment.id).where(*filters).order_by(Segment.ord, Segment.id)
-            ).all()
-        ]
+        eligible_ids = collect_segment_ids_in_chunks(
+            session,
+            project_id=project_id,
+            statuses=eligible_statuses,
+            segment_ids=request.segment_ids,
+            chapter_id=request.chapter_id,
+        )
         remaining = len(eligible_ids)
     else:
+        filters = [
+            Segment.project_id == project_id,
+            Segment.status.in_(eligible_statuses),
+        ]
         eligible_ids = None
         remaining = int(session.exec(select(func.count(Segment.id)).where(*filters)).one())
 

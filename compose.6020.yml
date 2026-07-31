@@ -1,3 +1,13 @@
+# NOTE: This override is a deployment experiment for a specific host/port
+# (121.4.28.63:6020) and is NOT the production baseline.
+#
+# It intentionally differs from compose.yml in ways that lower the security
+# bar and must be resolved before this host serves untrusted traffic:
+#   * TRANS_ENVIRONMENT=development (not production)
+#   * plain HTTP with no TLS termination path
+#   * ambient provider keys via OPENAI_API_* environment variables, bypassing
+#     the encrypted credential store
+# Do not copy this file into new deployments; use compose.yml instead.
 services:
   app:
     environment:

@@ -21,6 +21,7 @@ settings.local.toml
 # Runtime data
 data/trans.db
 data/trans.db-*
+data/credential-master.key
 data/uploads/*
 !data/uploads/.gitkeep
 exports/*

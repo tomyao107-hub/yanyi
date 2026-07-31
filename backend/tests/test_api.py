@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import sqlite3
 import time
@@ -91,9 +92,13 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestCli
     monkeypatch.setattr(
         "backend.app.security.sessions.login_token_bucket", LoginTokenBucket()
     )
-    # Ensure JobManager uses the test database engine
+    # Ensure JobManager uses the test database engine. The worker and its wake
+    # event are process-global and bind to a TestClient event loop; rebuild
+    # them per test so no test inherits a worker bound to a closed loop.
     from backend.app.jobs.manager import job_manager
     job_manager._session = background_session
+    job_manager._wake = asyncio.Event()
+    job_manager._worker = None
     with TestClient(app) as test_client:
         _login(test_client)
         yield test_client
@@ -819,3 +824,309 @@ def test_health_reports_database_failure(
 
     monkeypatch.setattr(main_module, "session_factory", broken_session)
     assert client.get("/health").status_code == 503
+
+
+def _create_test_profile(
+    client: TestClient,
+    *,
+    enabled: bool = True,
+    make_default: bool = False,
+) -> dict[str, object]:
+    credential = client.post(
+        "/api/settings/credentials",
+        json={
+            "provider": "openai",
+            "profile_label": "Test",
+            "api_key": "sk-test-1234567890",
+        },
+    )
+    assert credential.status_code == 201, credential.text
+    response = client.post(
+        "/api/settings/model-profiles",
+        json={
+            "display_name": "Default Test Model",
+            "provider": "openai",
+            "litellm_model_id": "openai/gpt-5-mini",
+            "credential_id": credential.json()["id"],
+            "enabled": enabled,
+        },
+    )
+    assert response.status_code == 201, response.text
+    profile = response.json()
+    if make_default:
+        promoted = client.post(f"/api/settings/model-profiles/{profile['id']}/default")
+        assert promoted.status_code == 200, promoted.text
+    return profile
+
+
+def test_new_project_uses_enabled_default_model_profile(client: TestClient) -> None:
+    profile = _create_test_profile(client, make_default=True)
+    project = upload_markdown(client)
+    assert project["model_profile_id"] == profile["id"]
+
+
+def test_new_project_stays_unbound_without_default_profile(client: TestClient) -> None:
+    _create_test_profile(client, enabled=False)
+    project = upload_markdown(client)
+    assert project["model_profile_id"] is None
+
+
+def test_patch_explicit_null_clears_profile_and_template(client: TestClient) -> None:
+    profile = _create_test_profile(client, make_default=True)
+    template = client.post(
+        "/api/settings/prompt-templates",
+        json={"name": "Temp", "system_prompt": "Translate {source_lang} to {target_lang}."},
+    )
+    assert template.status_code == 201, template.text
+    project = upload_markdown(client)
+    project_id = project["id"]
+
+    assigned = client.patch(
+        f"/api/projects/{project_id}",
+        json={
+            "model_profile_id": profile["id"],
+            "prompt_template_id": template.json()["id"],
+        },
+    )
+    assert assigned.status_code == 200, assigned.text
+    body = assigned.json()
+    assert body["model_profile_id"] == profile["id"]
+    assert body["prompt_template_id"] == template.json()["id"]
+
+    cleared = client.patch(
+        f"/api/projects/{project_id}",
+        json={"model_profile_id": None, "prompt_template_id": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    body = cleared.json()
+    assert body["model_profile_id"] is None
+    assert body["prompt_template_id"] is None
+
+
+def test_patch_rejects_unknown_or_disabled_assignments(client: TestClient) -> None:
+    disabled_profile = _create_test_profile(client, enabled=False)
+    disabled_template = client.post(
+        "/api/settings/prompt-templates",
+        json={"name": "Disabled", "system_prompt": "x", "enabled": False},
+    )
+    assert disabled_template.status_code == 201, disabled_template.text
+    project = upload_markdown(client)
+    project_id = project["id"]
+
+    missing = client.patch(
+        f"/api/projects/{project_id}", json={"model_profile_id": 999999}
+    )
+    assert missing.status_code == 422
+    off_profile = client.patch(
+        f"/api/projects/{project_id}", json={"model_profile_id": disabled_profile["id"]}
+    )
+    assert off_profile.status_code == 422
+    off_template = client.patch(
+        f"/api/projects/{project_id}",
+        json={"prompt_template_id": disabled_template.json()["id"]},
+    )
+    assert off_template.status_code == 422
+
+    # Failed requests must not leave a partial assignment behind.
+    body = client.get(f"/api/projects/{project_id}").json()
+    assert body["model_profile_id"] is None
+    assert body["prompt_template_id"] is None
+
+
+def _install_mock_provider(monkeypatch: pytest.MonkeyPatch, model: str = "mock/scoped") -> None:
+    from backend.app.engine import translator as core_translator
+
+    class MockProvider:
+        async def translate(self, text: str, **kwargs: object) -> TranslationResult:
+            del kwargs
+            return TranslationResult(
+                text=f"译文：{text}", token_in=3, token_out=4, model=model
+            )
+
+    monkeypatch.setattr(core_translator, "LiteLLMProvider", MockProvider)
+
+
+def _wait_until_idle(client: TestClient, project_id: int, timeout: float = 5) -> dict[str, object]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        detail = client.get(f"/api/projects/{project_id}").json()
+        if detail["status"] in {"ready", "done"}:
+            return detail
+        time.sleep(0.01)
+    raise AssertionError("translation did not settle")
+
+
+def test_scoped_translate_tolerates_huge_selection(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_mock_provider(monkeypatch, model="mock/huge")
+    project = upload_markdown(client)
+    project_id = int(project["id"])
+    huge = list(range(1, 10_000))
+    response = client.post(
+        f"/api/projects/{project_id}/translate", json={"segment_ids": huge}
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["running"] is True
+    _wait_until_idle(client, project_id)
+    page = client.get(
+        f"/api/projects/{project_id}/segments", params={"page_size": 100}
+    ).json()
+    assert page["items"]
+    assert all(segment["status"] == "done" for segment in page["items"])
+
+
+def test_scoped_job_recovery_replays_fixed_payload(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from backend.app.jobs.manager import job_manager
+    from backend.app.models import Job
+
+    _install_mock_provider(monkeypatch, model="mock/recover")
+    response = client.post(
+        "/api/projects",
+        files={
+            "file": (
+                "two.md",
+                b"# One\n\nAlpha here.\n\nBeta here.\n\n# Two\n\nGamma here.",
+            )
+        },
+        data={"title": "Recovery", "provider_cfg": '{"model":"mock/model"}'},
+    )
+    assert response.status_code == 201, response.text
+    detail = response.json()
+    project_id = int(detail["id"])
+    chapters = sorted(detail["chapters"], key=lambda chapter: chapter["ord"])
+    first_chapter, second_chapter = chapters[0]["id"], chapters[1]["id"]
+
+    page = client.get(
+        f"/api/projects/{project_id}/segments", params={"page_size": 100}
+    ).json()
+    first_ids = [s["id"] for s in page["items"] if s["chapter_id"] == first_chapter]
+    second_ids = [s["id"] for s in page["items"] if s["chapter_id"] == second_chapter]
+    assert first_ids and second_ids
+
+    # Simulate a crashed worker: an expired lease on a running scoped job.
+    stale_lease = (datetime.now(UTC) - timedelta(seconds=60)).isoformat(timespec="milliseconds")
+    with adapters.session_factory() as session:
+        job = Job(
+            project_id=project_id,
+            job_type="translate",
+            status="running",
+            lease_owner="dead-worker",
+            lease_expires_at=stale_lease,
+            attempt_count=1,
+            max_attempts=3,
+            payload_json={"retry_errors": True, "segment_ids": first_ids},
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        original_job_id = job.id
+    assert original_job_id is not None
+
+    assert job_manager.recover() == 1
+    with adapters.session_factory() as session:
+        requeued = session.exec(
+            select(Job).where(Job.status == "queued", Job.job_type == "translate")
+        ).one()
+        assert requeued.payload_json == {
+            "retry_errors": True,
+            "segment_ids": first_ids,
+        }
+        requeued_id = requeued.id
+    assert requeued_id is not None and requeued_id != original_job_id
+
+    # The replayed job inherits the original attempt count, so its retry
+    # backoff floor must pass before the worker will claim it again.
+    aged = (datetime.now(UTC) - timedelta(seconds=120)).isoformat(timespec="milliseconds")
+    with adapters.session_factory() as session:
+        record = session.get(Job, requeued_id)
+        assert record is not None
+        record.updated_at = aged
+        session.add(record)
+        session.commit()
+
+    # Wake the durable worker and wait for the replayed job's terminal state.
+    # The wake flag can race the worker's own clear(), so the heartbeat timeout
+    # (10s) is the guaranteed floor.
+    job_manager._wake.set()
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        with adapters.session_factory() as session:
+            record = session.get(Job, requeued_id)
+            if record is not None and record.status in {"succeeded", "failed"}:
+                break
+        time.sleep(0.05)
+    else:
+        with adapters.session_factory() as session:
+            records = session.exec(select(Job)).all()
+            diagnostics = [
+                (job.id, job.status, job.error_code, job.lease_owner, job.updated_at)
+                for job in records
+            ]
+        worker = job_manager._worker
+        worker_state = "none" if worker is None else ("done" if worker.done() else "pending")
+        raise AssertionError(
+            f"replayed job did not finish; jobs={diagnostics} worker={worker_state}"
+        )
+    with adapters.session_factory() as session:
+        assert session.get(Job, requeued_id) is not None
+        assert session.get(Job, requeued_id).status == "succeeded"  # type: ignore[union-attr]
+
+    # Replay honours exactly the fixed scope: chapter two stays pending even
+    # though its segments are still eligible at restart time.
+    for segment_id in first_ids:
+        assert client.get(f"/api/segments/{segment_id}").json()["status"] == "done"
+    for segment_id in second_ids:
+        assert client.get(f"/api/segments/{segment_id}").json()["status"] == "pending"
+
+
+def test_scoped_translate_intersection_and_foreign_ids(client: TestClient) -> None:
+    response = client.post(
+        "/api/projects",
+        files={
+            "file": (
+                "two.md",
+                b"# One\n\nAlpha here.\n\nBeta here.\n\n# Two\n\nGamma here.",
+            )
+        },
+        data={"title": "Intersection", "provider_cfg": '{"model":"mock/model"}'},
+    )
+    assert response.status_code == 201, response.text
+    detail = response.json()
+    project_id = int(detail["id"])
+    chapters = sorted(detail["chapters"], key=lambda chapter: chapter["ord"])
+    first_chapter, second_chapter = chapters[0]["id"], chapters[1]["id"]
+    page = client.get(
+        f"/api/projects/{project_id}/segments", params={"page_size": 100}
+    ).json()
+    first_ids = [s["id"] for s in page["items"] if s["chapter_id"] == first_chapter]
+    second_ids = [s["id"] for s in page["items"] if s["chapter_id"] == second_chapter]
+    assert first_ids and second_ids
+
+    # chapter_id and segment_ids intersect: a selection from another chapter
+    # inside the same project queues nothing.
+    disjoint = client.post(
+        f"/api/projects/{project_id}/translate",
+        json={"chapter_id": first_chapter, "segment_ids": second_ids},
+    )
+    assert disjoint.status_code == 202, disjoint.text
+    assert disjoint.json()["running"] is False
+
+    # Segment IDs from a different project are safely ignored, not an error.
+    foreign = upload_markdown(client)
+    foreign_page = client.get(
+        f"/api/projects/{foreign['id']}/segments", params={"page_size": 100}
+    ).json()
+    foreign_ids = [segment["id"] for segment in foreign_page["items"]]
+    assert foreign_ids
+    crossed = client.post(
+        f"/api/projects/{project_id}/translate", json={"segment_ids": foreign_ids}
+    )
+    assert crossed.status_code == 202, crossed.text
+    assert crossed.json()["running"] is False

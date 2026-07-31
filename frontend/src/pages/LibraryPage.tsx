@@ -319,6 +319,16 @@ export function LibraryPage() {
         : false,
   });
 
+  const profilesQuery = useQuery({
+    queryKey: queryKeys.modelProfiles,
+    queryFn: () => api.modelProfiles(),
+    enabled: Boolean(projectsQuery.data?.some((project) => project.model_profile_id != null)),
+    staleTime: 60_000,
+  });
+  const profileNames = new Map(
+    (profilesQuery.data ?? []).map((profile) => [profile.id, profile.display_name] as const),
+  );
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.deleteProject(id),
     onSuccess: () => {
@@ -463,7 +473,9 @@ export function LibraryPage() {
                           {project.title}
                         </h2>
                         <p className="mt-1 truncate text-xs text-ink-500">
-                          {String(project.provider_cfg.model ?? "尚未选择模型")}
+                          {project.model_profile_id != null
+                            ? profileNames.get(project.model_profile_id) ?? "服务端模型配置"
+                            : String(project.provider_cfg.model ?? "尚未选择模型")}
                         </p>
                       </div>
                       <button

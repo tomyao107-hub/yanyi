@@ -5,7 +5,7 @@ import inspect
 import random
 import time
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -30,6 +30,53 @@ EventCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 MAX_TRANSLATION_CONCURRENCY = 8
 SAFE_PROVIDER_ERROR = "Translation provider request failed"
 SAFE_EMPTY_RESULT_ERROR = "Translation provider returned an empty result"
+
+# SQLite's per-statement bind variable limit varies by build; keep explicit
+# selections well under the common floor so huge scopes never fail the query.
+_ID_QUERY_CHUNK_SIZE = 900
+
+
+def collect_segment_ids_in_chunks(
+    session: Session,
+    *,
+    project_id: int,
+    statuses: Collection[str],
+    segment_ids: Sequence[int] | None = None,
+    chapter_id: int | None = None,
+) -> list[int]:
+    """Resolve eligible segment IDs in (ord, id) execution order.
+
+    An explicit selection is chunked into bounded ``IN`` clauses; an empty
+    selection resolves to no rows (never to a whole-project scan), and ``None``
+    resolves the entire project in one ordered query.
+    """
+
+    if segment_ids is not None:
+        unique_ids = list(dict.fromkeys(segment_ids))
+        rows: list[tuple[int, int]] = []
+        for offset in range(0, len(unique_ids), _ID_QUERY_CHUNK_SIZE):
+            statement = select(Segment.id, Segment.ord).where(
+                Segment.project_id == project_id,
+                Segment.status.in_(statuses),
+                Segment.id.in_(unique_ids[offset : offset + _ID_QUERY_CHUNK_SIZE]),
+            )
+            if chapter_id is not None:
+                statement = statement.where(Segment.chapter_id == chapter_id)
+            rows.extend(session.exec(statement).all())
+        return [
+            int(segment_id)
+            for segment_id, _ in sorted(rows, key=lambda row: (row[1], row[0]))
+        ]
+    statement = select(Segment.id).where(
+        Segment.project_id == project_id,
+        Segment.status.in_(statuses),
+    )
+    if chapter_id is not None:
+        statement = statement.where(Segment.chapter_id == chapter_id)
+    return [
+        int(segment_id)
+        for segment_id in session.exec(statement.order_by(Segment.ord, Segment.id)).all()
+    ]
 
 
 @dataclass(slots=True)
@@ -497,22 +544,12 @@ class Translator:
                 "done",
                 "reviewed",
             }
-            statement = select(Segment.id).where(
-                Segment.project_id == project_id,
-                Segment.status.in_(claimable),
+            candidate_ids = collect_segment_ids_in_chunks(
+                session,
+                project_id=project_id,
+                statuses=claimable,
+                segment_ids=segment_ids,
             )
-            selected_ids = None if segment_ids is None else {int(value) for value in segment_ids}
-            if selected_ids is not None:
-                if selected_ids:
-                    statement = statement.where(Segment.id.in_(selected_ids))
-                else:
-                    statement = statement.where(Segment.id.in_([-1]))
-            candidate_ids = [
-                int(segment_id)
-                for segment_id in session.exec(
-                    statement.order_by(Segment.ord, Segment.id)
-                ).all()
-            ]
             project.status = "translating"
             project.updated_at = utc_now()
             session.add(project)

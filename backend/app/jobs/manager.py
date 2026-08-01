@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 
 from ..db import session_factory as default_session_factory
 from ..models import Job, utc_now
+from ..services.runtime_logs import record_runtime_log
 from .handlers import get_handler
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ class JobManager:
         *,
         job_type: str = "translate",
         payload: dict[str, Any] | None = None,
+        progress_total: int = 0,
     ) -> bool:
         """Queue a durable job for the project.
 
@@ -153,7 +155,12 @@ class JobManager:
         """
 
         del job_factory
-        _, created = self.create(project_id, job_type=job_type, payload=payload)
+        _, created = self.create(
+            project_id,
+            job_type=job_type,
+            payload=payload,
+            progress_total=progress_total,
+        )
         return created
 
     async def stop(self, project_id: int, *, timeout: float = 2.0) -> bool:
@@ -177,6 +184,16 @@ class JobManager:
             session.add(job)
             session.commit()
             job_id = job.id
+            job_type = job.job_type
+        record_runtime_log(
+            project_id=project_id,
+            job_id=job_id,
+            level="warning",
+            event_type="job.stop_requested",
+            message="已请求停止后台任务",
+            details={"job_type": job_type},
+            session_factory=self._session,
+        )
         stop_event = self._local_stop_events.get(job_id)
         if stop_event is not None:
             stop_event.set()
@@ -375,6 +392,19 @@ class JobManager:
             self._heartbeat(job_id, stop_event),
             name=f"job-heartbeat-{job_id}",
         )
+        record_runtime_log(
+            project_id=project_id,
+            job_id=job_id,
+            event_type="job.started",
+            message="后台翻译任务开始执行",
+            details={
+                "job_type": job_type,
+                "payload_scope": (
+                    "selected" if payload.get("segment_ids") is not None else "all"
+                ),
+            },
+            session_factory=self._session,
+        )
         try:
             result = await spec.handler(job_id, project_id, payload, stop_event)
             now = utc_now()
@@ -403,6 +433,20 @@ class JobManager:
                 job.updated_at = now
                 session.add(job)
                 session.commit()
+                final_status = job.status
+            record_runtime_log(
+                project_id=project_id,
+                job_id=job_id,
+                level="warning" if final_status in {"cancelled", "interrupted"} else "info",
+                event_type=f"job.{final_status}",
+                message=(
+                    "后台翻译任务已完成"
+                    if final_status == "succeeded"
+                    else "后台翻译任务已停止"
+                ),
+                details={"job_type": job_type},
+                session_factory=self._session,
+            )
         except asyncio.CancelledError:
             now = utc_now()
             with self._session() as session:
@@ -420,6 +464,15 @@ class JobManager:
             raise
         except Exception as exc:
             logger.exception("Job %s failed with %s", job_id, type(exc).__name__)
+            record_runtime_log(
+                project_id=project_id,
+                job_id=job_id,
+                level="error",
+                event_type="job.failed",
+                message="后台翻译任务执行失败",
+                details={"job_type": job_type, "error_type": type(exc).__name__},
+                session_factory=self._session,
+            )
             self._fail_or_requeue(job_id, "job_execution_failed", SAFE_JOB_FAILURE_SUMMARY)
         finally:
             heartbeat.cancel()

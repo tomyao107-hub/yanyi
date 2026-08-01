@@ -703,6 +703,84 @@ class Job(SQLModel, table=True):
     finished_at: str | None = Field(default=None, sa_column=Column(Text))
 
 
+class RuntimeLog(SQLModel, table=True):
+    """Persistent, user-visible execution trace for project background work."""
+
+    __tablename__ = "runtime_log"
+    __table_args__ = (
+        CheckConstraint(
+            "level IN ('debug', 'info', 'warning', 'error')",
+            name="ck_runtime_log_level",
+        ),
+        CheckConstraint("length(trim(event_type)) > 0", name="ck_runtime_log_event_type"),
+        CheckConstraint("length(trim(message)) > 0", name="ck_runtime_log_message"),
+        Index("ix_runtime_log_project_id_id", "project_id", "id"),
+        Index("ix_runtime_log_job_id_id", "job_id", "id"),
+        Index("ix_runtime_log_project_level_id", "project_id", "level", "id"),
+        Index("ix_runtime_log_created_at", "created_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    project_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "project.id",
+                name="fk_runtime_log_project_id_project",
+                ondelete="CASCADE",
+            ),
+            nullable=False,
+        )
+    )
+    job_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "job.id",
+                name="fk_runtime_log_job_id_job",
+                ondelete="SET NULL",
+            ),
+            nullable=True,
+        ),
+    )
+    segment_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "segment.id",
+                name="fk_runtime_log_segment_id_segment",
+                ondelete="SET NULL",
+            ),
+            nullable=True,
+        ),
+    )
+    chapter_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "chapter.id",
+                name="fk_runtime_log_chapter_id_chapter",
+                ondelete="SET NULL",
+            ),
+            nullable=True,
+        ),
+    )
+    level: str = Field(
+        default="info",
+        sa_column=Column(String(16), nullable=False, server_default="info"),
+    )
+    event_type: str = Field(sa_column=Column(String(64), nullable=False))
+    message: str = Field(sa_column=Column(Text, nullable=False))
+    details_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict, server_default="{}"),
+    )
+    created_at: str = Field(default_factory=utc_now, sa_column=Column(Text, nullable=False))
+
+
 class UsageRecord(SQLModel, table=True):
     __tablename__ = "usage_record"
     __table_args__ = (

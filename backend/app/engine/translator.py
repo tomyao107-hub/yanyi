@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import random
 import time
 from collections import defaultdict
@@ -34,6 +35,7 @@ SAFE_EMPTY_RESULT_ERROR = "Translation provider returned an empty result"
 # SQLite's per-statement bind variable limit varies by build; keep explicit
 # selections well under the common floor so huge scopes never fail the query.
 _ID_QUERY_CHUNK_SIZE = 900
+logger = logging.getLogger(__name__)
 
 
 def collect_segment_ids_in_chunks(
@@ -550,6 +552,18 @@ class Translator:
                 statuses=claimable,
                 segment_ids=segment_ids,
             )
+            candidate_chapters: dict[int, int] = {}
+            for offset in range(0, len(candidate_ids), _ID_QUERY_CHUNK_SIZE):
+                rows = session.exec(
+                    select(Segment.id, Segment.chapter_id).where(
+                        Segment.id.in_(
+                            candidate_ids[offset : offset + _ID_QUERY_CHUNK_SIZE]
+                        )
+                    )
+                ).all()
+                candidate_chapters.update(
+                    {int(segment_id): int(chapter_id) for segment_id, chapter_id in rows}
+                )
             project.status = "translating"
             project.updated_at = utc_now()
             session.add(project)
@@ -590,80 +604,154 @@ class Translator:
                 **(await update_stats()),
             },
         )
+        await _emit(
+            event_callback,
+            {
+                "type": "runtime_log",
+                "project_id": project_id,
+                "level": "info",
+                "event_type": "translation.started",
+                "message": f"准备翻译 {len(candidate_ids)} 个段落",
+                "details": {
+                    "segments": len(candidate_ids),
+                    "model": model,
+                    "max_concurrency": max_concurrency,
+                    "stream": stream,
+                    "generate_chapter_summaries": generate_summaries,
+                    "scope": "selected" if segment_ids is not None else "all",
+                },
+            },
+        )
 
-        if generate_summaries and candidate_ids:
+        summarized_chapters: set[int] = set()
+
+        async def ensure_chapter_summary(chapter_id: int) -> None:
+            """Prepare one chapter just before its first segment is queued.
+
+            Workers keep translating the previous chapter while this coroutine
+            prepares the next one, so a whole-book run starts recording segment
+            results after one summary instead of waiting for every summary.
+            """
+
+            if not generate_summaries or chapter_id in summarized_chapters:
+                return
+            summarized_chapters.add(chapter_id)
             with self._session() as session:
-                chapter_ids = list(
+                chapter = session.get(Chapter, chapter_id)
+                if chapter is None or chapter.summary:
+                    return
+                source = "\n\n".join(
                     session.exec(
-                        select(Segment.chapter_id)
-                        .where(Segment.id.in_(candidate_ids))
-                        .distinct()
+                        select(Segment.source_text)
+                        .where(Segment.chapter_id == chapter_id)
+                        .order_by(Segment.ord)
                     ).all()
                 )
-            for chapter_id in chapter_ids:
-                if _stop_requested(stop_event):
-                    await update_stats(stopped=True)
-                    break
+            source = source[: int(cfg.get("summary_max_chars", 8000))]
+            if not source.strip():
+                return
+            started_at = time.monotonic()
+            await _emit(
+                event_callback,
+                {
+                    "type": "runtime_log",
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "level": "info",
+                    "event_type": "summary.requested",
+                    "message": "正在生成章节摘要",
+                    "details": {"model": model, "source_chars": len(source)},
+                },
+            )
+            try:
+                result = await translate_with_retry(
+                    active_provider,
+                    source,
+                    system_prompt=(
+                        "你是一名书籍编辑。请用简体中文概括下面章节的关键人物、"
+                        "事件、论点和语气，控制在 120 字以内。只输出摘要。"
+                    ),
+                    context="",
+                    model=model,
+                    temperature=min(temperature, 0.3),
+                    policy=self.retry_policy,
+                    rate_limit=rate_limit,
+                )
+                summary = result.text.strip()
+                if not summary:
+                    raise ValueError(SAFE_EMPTY_RESULT_ERROR)
+                persisted = False
                 with self._session() as session:
                     chapter = session.get(Chapter, chapter_id)
-                    if chapter is None or chapter.summary:
-                        continue
-                    source = "\n\n".join(
-                        session.exec(
-                            select(Segment.source_text)
-                            .where(Segment.chapter_id == chapter_id)
-                            .order_by(Segment.ord)
-                        ).all()
-                    )
-                source = source[: int(cfg.get("summary_max_chars", 8000))]
-                if not source.strip():
-                    continue
-                try:
-                    result = await translate_with_retry(
-                        active_provider,
-                        source,
-                        system_prompt=(
-                            "你是一名书籍编辑。请用简体中文概括下面章节的关键人物、"
-                            "事件、论点和语气，控制在 120 字以内。只输出摘要。"
-                        ),
-                        context="",
-                        model=model,
-                        temperature=min(temperature, 0.3),
-                        policy=self.retry_policy,
-                        rate_limit=rate_limit,
-                    )
-                    summary = result.text.strip()
-                    if not summary:
-                        raise ValueError(SAFE_EMPTY_RESULT_ERROR)
-                    with self._session() as session:
-                        chapter = session.get(Chapter, chapter_id)
-                        if chapter is not None and not chapter.summary:
-                            chapter.summary = summary
-                            session.add(chapter)
-                            session.commit()
-                    await _emit(
-                        event_callback,
-                        {
-                            "type": "chapter_summary",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "summary": summary,
+                    if chapter is not None and not chapter.summary:
+                        chapter.summary = summary
+                        session.add(chapter)
+                        session.commit()
+                        persisted = True
+                elapsed_ms = round((time.monotonic() - started_at) * 1000)
+                await _emit(
+                    event_callback,
+                    {
+                        "type": "runtime_log",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "level": "info",
+                        "event_type": "summary.persisted",
+                        "message": "章节摘要已生成并写入数据库",
+                        "details": {
+                            "model": result.model or model,
+                            "duration_ms": elapsed_ms,
+                            "token_in": result.token_in,
+                            "token_out": result.token_out,
+                            "summary_chars": len(summary),
+                            "persisted": persisted,
                         },
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    await _emit(
-                        event_callback,
-                        {
-                            "type": "error",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "stage": "chapter_summary",
-                            "error_code": "chapter_summary_failed",
-                            "error": "Chapter summary generation failed",
+                    },
+                )
+                await _emit(
+                    event_callback,
+                    {
+                        "type": "chapter_summary",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "summary": summary,
+                    },
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "Chapter summary failed project=%s chapter=%s",
+                    project_id,
+                    chapter_id,
+                )
+                await _emit(
+                    event_callback,
+                    {
+                        "type": "runtime_log",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "level": "warning",
+                        "event_type": "summary.failed",
+                        "message": "章节摘要生成失败，将继续翻译段落",
+                        "details": {
+                            "model": model,
+                            "duration_ms": round((time.monotonic() - started_at) * 1000),
+                            "error_type": type(exc).__name__,
                         },
-                    )
+                    },
+                )
+                await _emit(
+                    event_callback,
+                    {
+                        "type": "error",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "stage": "chapter_summary",
+                        "error_code": "chapter_summary_failed",
+                        "error": "Chapter summary generation failed",
+                    },
+                )
 
         queue: asyncio.Queue[int | None] = asyncio.Queue(
             maxsize=max(1, max_concurrency * 2)
@@ -769,6 +857,18 @@ class Translator:
                         set_pending(segment_id)
                         await update_stats(stopped=True)
                         continue
+                    await _emit(
+                        event_callback,
+                        {
+                            "type": "runtime_log",
+                            "project_id": project_id,
+                            "segment_id": segment_id,
+                            "level": "debug",
+                            "event_type": "segment.claimed",
+                            "message": "段落已进入处理状态",
+                            "details": {"source_chars": len(segment.source_text)},
+                        },
+                    )
                     async with hash_locks[segment.src_hash]:
                         if _stop_requested(stop_event):
                             set_pending(segment_id)
@@ -810,11 +910,42 @@ class Translator:
                                             "tm_hit": True,
                                         },
                                     )
+                                    await _emit(
+                                        event_callback,
+                                        {
+                                            "type": "runtime_log",
+                                            "project_id": project_id,
+                                            "segment_id": segment_id,
+                                            "level": "info",
+                                            "event_type": "segment.tm_persisted",
+                                            "message": "命中翻译记忆并写入段落",
+                                            "details": {"target_chars": len(cached)},
+                                        },
+                                    )
                                 continue
 
                         segment_path = dict(segment.struct_path)
                         protected = protect_for_segment(segment.source_text, segment_path)
+                        provider_started_at = time.monotonic()
                         try:
+                            await _emit(
+                                event_callback,
+                                {
+                                    "type": "runtime_log",
+                                    "project_id": project_id,
+                                    "segment_id": segment_id,
+                                    "level": "info",
+                                    "event_type": "provider.requested",
+                                    "message": "已向模型提交段落翻译请求",
+                                    "details": {
+                                        "model": model,
+                                        "source_chars": len(segment.source_text),
+                                        "protected_chars": len(protected.text),
+                                        "context_chars": len(segment.context),
+                                        "stream": stream,
+                                    },
+                                },
+                            )
                             if stream:
 
                                 async def on_delta(
@@ -870,6 +1001,27 @@ class Translator:
                                 )
                             if not provider_result.text.strip():
                                 raise ValueError(SAFE_EMPTY_RESULT_ERROR)
+                            provider_duration_ms = round(
+                                (time.monotonic() - provider_started_at) * 1000
+                            )
+                            await _emit(
+                                event_callback,
+                                {
+                                    "type": "runtime_log",
+                                    "project_id": project_id,
+                                    "segment_id": segment_id,
+                                    "level": "info",
+                                    "event_type": "provider.responded",
+                                    "message": "模型已返回段落译文",
+                                    "details": {
+                                        "model": provider_result.model or model,
+                                        "duration_ms": provider_duration_ms,
+                                        "token_in": provider_result.token_in,
+                                        "token_out": provider_result.token_out,
+                                        "response_chars": len(provider_result.text),
+                                    },
+                                },
+                            )
                             target_text = restore_for_segment(
                                 protected,
                                 provider_result.text.strip(),
@@ -897,6 +1049,21 @@ class Translator:
                                 session.commit()
                                 updated = bool(result.rowcount)
                             if not updated:
+                                await _emit(
+                                    event_callback,
+                                    {
+                                        "type": "runtime_log",
+                                        "project_id": project_id,
+                                        "segment_id": segment_id,
+                                        "level": "warning",
+                                        "event_type": "segment.write_skipped",
+                                        "message": "模型已返回，但段落状态已变化，未覆盖数据库记录",
+                                        "details": {
+                                            "model": provider_result.model or model,
+                                            "duration_ms": provider_duration_ms,
+                                        },
+                                    },
+                                )
                                 continue
                             with self._session() as session:
                                 TranslationMemory(session, source_lang, target_lang).store(
@@ -908,6 +1075,25 @@ class Translator:
                                 done=1,
                                 token_in=provider_result.token_in,
                                 token_out=provider_result.token_out,
+                            )
+                            await _emit(
+                                event_callback,
+                                {
+                                    "type": "runtime_log",
+                                    "project_id": project_id,
+                                    "segment_id": segment_id,
+                                    "level": "info",
+                                    "event_type": "segment.persisted",
+                                    "message": "段落译文已写入数据库",
+                                    "details": {
+                                        "model": provider_result.model or model,
+                                        "target_chars": len(target_text),
+                                        "token_in": provider_result.token_in,
+                                        "token_out": provider_result.token_out,
+                                        "batch_done": current["done"],
+                                        "batch_total": current["total"],
+                                    },
+                                },
                             )
                             if stream and protected.replacements:
                                 await _emit(
@@ -933,7 +1119,12 @@ class Translator:
                         except asyncio.CancelledError:
                             set_pending(segment_id)
                             raise
-                        except Exception:
+                        except Exception as exc:
+                            logger.exception(
+                                "Segment translation failed project=%s segment=%s",
+                                project_id,
+                                segment_id,
+                            )
                             with self._session() as session:
                                 result = session.exec(
                                     update(Segment)
@@ -952,6 +1143,24 @@ class Translator:
                                 updated = bool(result.rowcount)
                             if updated:
                                 current = await update_stats(errors=1)
+                                await _emit(
+                                    event_callback,
+                                    {
+                                        "type": "runtime_log",
+                                        "project_id": project_id,
+                                        "segment_id": segment_id,
+                                        "level": "error",
+                                        "event_type": "segment.failed",
+                                        "message": "段落翻译失败，已记录为错误状态",
+                                        "details": {
+                                            "model": model,
+                                            "duration_ms": round(
+                                                (time.monotonic() - provider_started_at) * 1000
+                                            ),
+                                            "error_type": type(exc).__name__,
+                                        },
+                                    },
+                                )
                                 await _emit(
                                     event_callback,
                                     {
@@ -975,6 +1184,12 @@ class Translator:
                 if _stop_requested(stop_event):
                     await update_stats(stopped=True)
                     break
+                chapter_id = candidate_chapters.get(candidate_id)
+                if chapter_id is not None:
+                    await ensure_chapter_summary(chapter_id)
+                    if _stop_requested(stop_event):
+                        await update_stats(stopped=True)
+                        break
                 await queue.put(candidate_id)
             for _ in workers:
                 await queue.put(None)
@@ -1017,6 +1232,24 @@ class Translator:
                 "project_id": project_id,
                 **(await update_stats()),
                 "stopped": stats.stopped,
+            },
+        )
+        await _emit(
+            event_callback,
+            {
+                "type": "runtime_log",
+                "project_id": project_id,
+                "level": "warning" if stats.stopped else "info",
+                "event_type": "translation.stopped" if stats.stopped else "translation.completed",
+                "message": "翻译任务已停止" if stats.stopped else "翻译任务处理完毕",
+                "details": {
+                    "total": stats.total,
+                    "done": stats.done,
+                    "errors": stats.errors,
+                    "tm_hits": stats.tm_hits,
+                    "token_in": stats.token_in,
+                    "token_out": stats.token_out,
+                },
             },
         )
         return stats

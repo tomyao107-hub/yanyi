@@ -26,7 +26,6 @@ async def run_translation_job(
 ) -> Any:
     from ..api.adapters import run_project_translation
 
-    del job_id
     segment_ids = payload.get("segment_ids")
     if segment_ids is not None:
         segment_ids = [int(segment_id) for segment_id in segment_ids]
@@ -36,6 +35,7 @@ async def run_translation_job(
         retry_errors=bool(payload.get("retry_errors", True)),
         segment_ids=segment_ids,
         force=bool(payload.get("force", False)),
+        job_id=job_id,
     )
 
 

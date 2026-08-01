@@ -5,17 +5,19 @@ import hashlib
 import importlib
 import inspect
 import json
+import logging
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlmodel import Session, select
 
 from ..db import session_factory
-from ..models import Chapter, Project, Segment, utc_now
+from ..models import Chapter, Job, Project, Segment, utc_now
+from ..services.runtime_logs import record_runtime_log
 from .queries import project_progress
 from .runtime import event_broker
 
@@ -23,6 +25,7 @@ TranslationRunner = Callable[
     [int, asyncio.Event, bool, Callable[..., Awaitable[Any]]], Awaitable[Any]
 ]
 _translation_runner_override: TranslationRunner | None = None
+logger = logging.getLogger(__name__)
 
 
 def set_translation_runner(runner: TranslationRunner | None) -> None:
@@ -300,6 +303,7 @@ async def run_project_translation(
     retry_errors: bool = True,
     segment_ids: list[int] | None = None,
     force: bool = False,
+    job_id: int | None = None,
 ) -> None:
     async def callback(event_type: str | dict[str, Any] = "progress", **data: Any) -> None:
         if isinstance(event_type, dict):
@@ -311,6 +315,37 @@ async def run_project_translation(
             payload = data
         for reserved in ("project_id", "type", "id", "timestamp"):
             payload.pop(reserved, None)
+        if normalized_type == "runtime_log":
+            level = str(payload.pop("level", "info"))
+            log_event_type = str(payload.pop("event_type", "runtime.event"))
+            message = str(payload.pop("message", "Runtime event"))
+            details = dict(payload.pop("details", {}) or {})
+            segment_id = payload.get("segment_id")
+            chapter_id = payload.get("chapter_id")
+            entry = record_runtime_log(
+                project_id=project_id,
+                job_id=job_id,
+                segment_id=int(segment_id) if segment_id is not None else None,
+                chapter_id=int(chapter_id) if chapter_id is not None else None,
+                level=level,
+                event_type=log_event_type,
+                message=message,
+                details=details,
+                session_factory=session_factory,
+            )
+            await event_broker.publish(
+                project_id,
+                "runtime_log",
+                log_id=entry.id if entry is not None else None,
+                job_id=job_id,
+                segment_id=segment_id,
+                chapter_id=chapter_id,
+                level=level,
+                runtime_event_type=log_event_type,
+                message=message,
+                details=details,
+            )
+            return
         if normalized_type == "progress":
             for key in ("done", "total", "errors"):
                 if key in payload:
@@ -321,6 +356,20 @@ async def run_project_translation(
                 )
             payload["project_status"] = "translating"
             payload["running"] = True
+            if job_id is not None:
+                batch_done = int(payload.get("batch_done", 0))
+                batch_total = int(payload.get("batch_total", 0))
+                with session_factory() as job_session:
+                    job_session.exec(
+                        update(Job)
+                        .where(Job.id == job_id)
+                        .values(
+                            progress_current=max(0, batch_done),
+                            progress_total=max(0, batch_total),
+                            updated_at=utc_now(),
+                        )
+                    )
+                    job_session.commit()
         await event_broker.publish(project_id, normalized_type, **payload)
 
     with session_factory() as session:
@@ -383,6 +432,11 @@ async def run_project_translation(
         await event_broker.publish(project_id, "stopped")
         raise
     except Exception as exc:
+        logger.exception(
+            "Project translation failed project=%s job=%s",
+            project_id,
+            job_id,
+        )
         with session_factory() as session:
             project = session.get(Project, project_id)
             if project is not None:
@@ -407,7 +461,7 @@ async def run_project_translation(
             project_status="error",
             running=False,
         )
-        return
+        raise
 
     with session_factory() as session:
         project = session.get(Project, project_id)

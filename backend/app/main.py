@@ -19,12 +19,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import Response
 
 from . import __version__
-from .api import artifacts, auth, glossary, projects, segments, stream, tm
+from .api import artifacts, auth, glossary, logs, projects, segments, stream, tm
 from .api import settings as settings_api
 from .api.runtime import translation_tasks
 from .config import get_settings
 from .db import checkpoint_wal, migrate_db, session_factory
-from .models import AuditEvent, Project, Segment, utc_now
+from .models import AuditEvent, Project, RuntimeLog, Segment, utc_now
 from .schemas import HealthResponse
 from .security.crypto import MASTER_KEY_ENV, CredentialCryptoError, read_master_key_file
 from .security.dependencies import require_authenticated_session
@@ -101,13 +101,19 @@ def run_storage_maintenance(*, audit_retention_days: int) -> int:
     if audit_retention_days > 0:
         with session_factory() as session:
             # created_at is a lexicographically sortable ISO-8601 UTC string.
+            cutoff = _audit_cutoff(audit_retention_days)
             result = session.exec(
                 delete(AuditEvent).where(
-                    AuditEvent.created_at < _audit_cutoff(audit_retention_days)
+                    AuditEvent.created_at < cutoff
                 )
             )
+            log_result = session.exec(
+                delete(RuntimeLog).where(RuntimeLog.created_at < cutoff)
+            )
             session.commit()
-            removed = int(getattr(result, "rowcount", 0) or 0)
+            removed = int(getattr(result, "rowcount", 0) or 0) + int(
+                getattr(log_result, "rowcount", 0) or 0
+            )
     checkpoint_wal()
     return removed
 
@@ -275,6 +281,9 @@ def create_app() -> FastAPI:
     )
     application.include_router(
         stream.router, prefix=settings.api_prefix, dependencies=protected
+    )
+    application.include_router(
+        logs.router, prefix=settings.api_prefix, dependencies=protected
     )
     application.include_router(tm.router, prefix=settings.api_prefix, dependencies=protected)
     application.include_router(

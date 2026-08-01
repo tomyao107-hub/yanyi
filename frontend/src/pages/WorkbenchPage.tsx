@@ -285,6 +285,15 @@ export function WorkbenchPage() {
     onError: (error) => notify(errorMessage(error), "error"),
   });
 
+  const selectAllMutation = useMutation({
+    mutationFn: () => api.segmentIds(projectId, { chapterId, status }),
+    onSuccess: ({ ids, total }) => {
+      setSelectedIds(new Set(ids));
+      notify(total ? `已选择当前筛选下的全部 ${formatCount(total)} 个段落。` : "当前筛选下没有可选择的段落。", "info");
+    },
+    onError: (error) => notify(errorMessage(error), "error"),
+  });
+
   const stopMutation = useMutation({
     mutationFn: () => api.stopTranslation(projectId),
     onSuccess: () => {
@@ -536,12 +545,12 @@ export function WorkbenchPage() {
       }
     : baseProgress;
   const isTranslating = project.status === "translating" || forceStream;
-  const selectableSegments = segments.filter(
-    (segment) => segment.status !== "processing",
-  );
-  const allLoadedSelected =
-    selectableSegments.length > 0 &&
-    selectableSegments.every((segment) => selectedIds.has(segment.id));
+  const allFilteredSelected =
+    segmentTotal > 0 &&
+    selectedIds.size === segmentTotal &&
+    segments.every(
+      (segment) => segment.status === "processing" || selectedIds.has(segment.id),
+    );
 
   return (
     <div className="flex h-[calc(100vh-4rem)] min-h-[38rem] flex-col overflow-hidden">
@@ -678,16 +687,14 @@ export function WorkbenchPage() {
             <input
               type="checkbox"
               className="size-4 accent-cinnabar-700"
-              checked={allLoadedSelected}
-              onChange={(event) =>
-                setSelectedIds(
-                  event.target.checked
-                    ? new Set(selectableSegments.map((segment) => segment.id))
-                    : new Set(),
-                )
-              }
+              checked={allFilteredSelected}
+              disabled={selectAllMutation.isPending}
+              onChange={(event) => {
+                if (event.target.checked) selectAllMutation.mutate();
+                else setSelectedIds(new Set());
+              }}
             />
-            选择已加载
+            {selectAllMutation.isPending ? "选择中" : `选择全部 ${formatCount(segmentTotal)}`}
           </label>
           <span className="hidden text-[11px] tabular-nums text-ink-400 md:inline">
             {formatCount(segmentTotal)} 段

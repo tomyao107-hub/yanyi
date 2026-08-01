@@ -13,7 +13,7 @@ from .config import REPOSITORY_ROOT, get_settings
 # Revision an unversioned-but-current database is adopted at. Bump this together
 # with every new head revision, otherwise adoption stamps a stale version and
 # the next upgrade replays migrations against existing tables.
-SCHEMA_HEAD_REVISION = "0003_prompt_templates"
+SCHEMA_HEAD_REVISION = "0004_runtime_logs"
 
 
 def create_db_engine(database_url: str | None = None, *, echo: bool | None = None) -> Engine:

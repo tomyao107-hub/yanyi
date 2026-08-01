@@ -99,6 +99,34 @@ export interface SegmentPage {
   has_more: boolean;
 }
 
+export interface SegmentIdList {
+  ids: number[];
+  total: number;
+}
+
+export type RuntimeLogLevel = "debug" | "info" | "warning" | "error";
+
+export interface RuntimeLog {
+  id: number;
+  project_id: number;
+  job_id?: number | null;
+  segment_id?: number | null;
+  chapter_id?: number | null;
+  level: RuntimeLogLevel;
+  event_type: string;
+  message: string;
+  details_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RuntimeLogPage {
+  items: RuntimeLog[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}
+
 export interface GlossaryTerm {
   id: number;
   project_id: number;

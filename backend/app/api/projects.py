@@ -460,6 +460,7 @@ async def start_translation(
             segment_ids=eligible_ids,
         ),
         payload=payload,
+        progress_total=remaining,
     )
     return TaskState(
         project_id=project_id,

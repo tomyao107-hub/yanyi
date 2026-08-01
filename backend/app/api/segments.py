@@ -13,6 +13,7 @@ from ..models import Project, Segment, utc_now
 from ..schemas import (
     BulkActionResult,
     SegmentBulkAction,
+    SegmentIdList,
     SegmentPage,
     SegmentPatch,
     SegmentRead,
@@ -22,6 +23,8 @@ from .adapters import run_project_translation
 from .runtime import event_broker, translation_tasks
 
 router = APIRouter(tags=["segments"])
+
+MAX_EXPLICIT_SELECTION = 10_000
 
 
 def _project_or_404(session: Session, project_id: int) -> Project:
@@ -92,6 +95,49 @@ def list_segments(
         page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
     )
+
+
+@router.get(
+    "/projects/{project_id}/segment-ids",
+    response_model=SegmentIdList,
+    summary="List selectable segment IDs for the current filters",
+)
+def list_segment_ids(
+    project_id: int,
+    chapter_id: int | None = None,
+    segment_status: Annotated[
+        list[Literal["pending", "processing", "done", "error", "reviewed"]] | None,
+        Query(alias="status"),
+    ] = None,
+    session: Session = Depends(get_session),
+) -> SegmentIdList:
+    _project_or_404(session, project_id)
+    filters = [
+        Segment.project_id == project_id,
+        Segment.status != "processing",
+    ]
+    if chapter_id is not None:
+        filters.append(Segment.chapter_id == chapter_id)
+    if segment_status:
+        filters.append(Segment.status.in_(segment_status))
+    ids = [
+        int(segment_id)
+        for segment_id in session.exec(
+            select(Segment.id)
+            .where(*filters)
+            .order_by(Segment.ord, Segment.id)
+            .limit(MAX_EXPLICIT_SELECTION + 1)
+        ).all()
+    ]
+    if len(ids) > MAX_EXPLICIT_SELECTION:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The current filter contains more than 10000 selectable segments; "
+                "narrow the chapter or status filter"
+            ),
+        )
+    return SegmentIdList(ids=ids, total=len(ids))
 
 
 @router.get("/segments/{segment_id}", response_model=SegmentRead, summary="Get a segment")
@@ -208,6 +254,7 @@ async def retranslate_segment(
             "segment_ids": [segment_id],
             "force": True,
         },
+        progress_total=1,
     )
     return TaskState(
         project_id=project.id or 0,
@@ -295,6 +342,7 @@ async def bulk_segment_action(
                 "segment_ids": updated_ids,
                 "force": True,
             },
+            progress_total=len(updated_ids),
         )
     await event_broker.publish(
         project_id,

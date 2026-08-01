@@ -20,7 +20,10 @@ import type {
   PublicSettings,
   QaIssue,
   Segment,
+  SegmentIdList,
   SegmentPage,
+  RuntimeLogLevel,
+  RuntimeLogPage,
   TaskState,
   TranslateScope,
   TranslationMemoryStats,
@@ -379,6 +382,37 @@ export const api = {
           ? record.has_next
           : page * pageSize < total;
     return { items, total, page, page_size: pageSize, has_more: hasMore };
+  },
+
+  async segmentIds(
+    projectId: number,
+    options: { chapterId?: number; status?: string },
+  ): Promise<SegmentIdList> {
+    return request<SegmentIdList>(
+      `/projects/${projectId}/segment-ids${queryString({
+        chapter_id: options.chapterId,
+        status: options.status,
+      })}`,
+    );
+  },
+
+  async runtimeLogs(
+    projectId: number,
+    options: { page?: number; pageSize?: number; level?: RuntimeLogLevel } = {},
+  ): Promise<RuntimeLogPage> {
+    const page = options.page ?? 1;
+    const pageSize = options.pageSize ?? 200;
+    const payload = await request<RuntimeLogPage>(
+      `/projects/${projectId}/logs${queryString({
+        page,
+        page_size: pageSize,
+        level: options.level,
+      })}`,
+    );
+    return {
+      ...payload,
+      has_more: page * pageSize < payload.total,
+    };
   },
 
   async updateSegment(

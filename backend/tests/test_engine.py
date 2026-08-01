@@ -274,6 +274,68 @@ async def test_database_resume_and_chapter_summary_cache(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_chapter_summaries_do_not_block_first_segment_writeback(
+    tmp_path: Path,
+) -> None:
+    """A whole-book run translates chapter one while chapter two is summarized."""
+
+    translation_started = asyncio.Event()
+
+    class PipelineProvider:
+        def __init__(self) -> None:
+            self.summary_calls = 0
+
+        async def translate(self, text: str, **kwargs: Any) -> TranslationResult:
+            if "书籍编辑" in kwargs["system_prompt"]:
+                self.summary_calls += 1
+                if self.summary_calls == 2:
+                    await asyncio.wait_for(translation_started.wait(), timeout=0.5)
+                return TranslationResult("章节摘要", 3, 2, kwargs["model"])
+            translation_started.set()
+            return TranslationResult(f"译：{text}", 5, 4, kwargs["model"])
+
+    engine = create_db_engine(f"sqlite:///{(tmp_path / 'pipeline.db').as_posix()}")
+    init_db(engine)
+    with Session(engine) as session:
+        project = Project(
+            title="Pipeline",
+            source_type="md",
+            source_path=str(tmp_path / "pipeline.md"),
+            provider_cfg={
+                "model": "mock",
+                "max_concurrency": 1,
+                "generate_chapter_summaries": True,
+            },
+        )
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        assert project.id is not None
+        persist_document(
+            session,
+            project.id,
+            DocModel(
+                source_type="md",
+                chapters=[
+                    Chapter(0, "One", "one", [Block("para", "Alpha.", {})]),
+                    Chapter(1, "Two", "two", [Block("para", "Beta.", {})]),
+                ],
+            ),
+        )
+        project_id = project.id
+
+    provider = PipelineProvider()
+    stats = await Translator(
+        session_factory=lambda: Session(engine),
+        provider=provider,
+        retry_policy=RetryPolicy(base_delay=0, jitter=0),
+    ).translate_project(project_id)
+    assert stats.done == 2
+    assert provider.summary_calls == 2
+    assert translation_started.is_set()
+
+
+@pytest.mark.asyncio
 async def test_cli_pipeline_and_resume(tmp_path: Path) -> None:
     source = tmp_path / "book.md"
     source.write_text("# One\n\nHello world.\n", encoding="utf-8")

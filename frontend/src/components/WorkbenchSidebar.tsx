@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  SquareTerminal,
   SpellCheck2,
   Trash2,
   Upload,
@@ -23,8 +24,9 @@ import type { GlossaryTerm, QaIssue } from "../api/types";
 import { useToast } from "../store/toast";
 import { EmptyState } from "./EmptyState";
 import { Modal } from "./Modal";
+import { RuntimeLogPanel } from "./RuntimeLogPanel";
 
-type SidebarTab = "glossary" | "qa" | "memory";
+type SidebarTab = "glossary" | "qa" | "memory" | "logs";
 type TermInput = Omit<GlossaryTerm, "id" | "project_id">;
 
 const emptyTerm: TermInput = {
@@ -381,7 +383,7 @@ export function WorkbenchSidebar({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white/70 dark:bg-ink-900/70">
-      <div className="grid grid-cols-3 border-b hairline p-2">
+      <div className="grid grid-cols-4 border-b hairline p-2">
         <button
           type="button"
           className={`flex min-h-9 items-center justify-center gap-2 rounded-lg text-xs font-medium transition ${
@@ -423,6 +425,18 @@ export function WorkbenchSidebar({
         >
           <Database className="size-3.5" />
           翻译记忆
+        </button>
+        <button
+          type="button"
+          className={`flex min-h-9 items-center justify-center gap-1 rounded-lg text-xs font-medium transition ${
+            tab === "logs"
+              ? "bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-950"
+              : "text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800"
+          }`}
+          onClick={() => setTab("logs")}
+        >
+          <SquareTerminal className="size-3.5" />
+          日志
         </button>
       </div>
 
@@ -631,8 +645,10 @@ export function WorkbenchSidebar({
             )}
           </div>
         </>
-      ) : (
+      ) : tab === "memory" ? (
         <TranslationMemoryPanel projectId={projectId} />
+      ) : (
+        <RuntimeLogPanel projectId={projectId} onLocate={onLocate} />
       )}
 
       <TermEditor

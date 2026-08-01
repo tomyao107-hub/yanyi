@@ -946,6 +946,54 @@ def _install_mock_provider(monkeypatch: pytest.MonkeyPatch, model: str = "mock/s
     monkeypatch.setattr(core_translator, "LiteLLMProvider", MockProvider)
 
 
+def test_selectable_segment_ids_are_not_limited_to_first_page(client: TestClient) -> None:
+    paragraphs = "\n\n".join(f"Paragraph {index}." for index in range(140))
+    response = client.post(
+        "/api/projects",
+        files={"file": ("many.md", f"# Many\n\n{paragraphs}".encode())},
+        data={"title": "Many", "provider_cfg": '{"model":"mock/model"}'},
+    )
+    assert response.status_code == 201, response.text
+    project_id = int(response.json()["id"])
+    first_page = client.get(
+        f"/api/projects/{project_id}/segments",
+        params={"page": 1, "page_size": 80},
+    ).json()
+    selected = client.get(f"/api/projects/{project_id}/segment-ids")
+    assert selected.status_code == 200, selected.text
+    assert len(first_page["items"]) == 80
+    assert selected.json()["total"] > 80
+    assert len(selected.json()["ids"]) == selected.json()["total"]
+
+
+def test_translation_runtime_logs_expose_request_response_and_writeback(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_mock_provider(monkeypatch, model="mock/logged")
+    project_id = int(upload_markdown(client)["id"])
+    started = client.post(f"/api/projects/{project_id}/translate", json={})
+    assert started.status_code == 202, started.text
+    _wait_until_idle(client, project_id)
+    response = client.get(f"/api/projects/{project_id}/logs")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    event_types = {item["event_type"] for item in body["items"]}
+    assert {
+        "job.started",
+        "translation.started",
+        "provider.requested",
+        "provider.responded",
+        "segment.persisted",
+        "translation.completed",
+    } <= event_types
+    provider_log = next(
+        item for item in body["items"] if item["event_type"] == "provider.responded"
+    )
+    assert provider_log["details_json"]["model"] == "mock/logged"
+    assert provider_log["details_json"]["token_out"] == 4
+
+
 def _wait_until_idle(client: TestClient, project_id: int, timeout: float = 5) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

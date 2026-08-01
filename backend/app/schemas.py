@@ -118,6 +118,11 @@ class SegmentPage(APIModel):
     pages: int
 
 
+class SegmentIdList(APIModel):
+    ids: list[int]
+    total: int
+
+
 class SegmentPatch(APIModel):
     target_text: str | None = None
     status: Literal["pending", "done", "error", "reviewed"] | None = None
@@ -216,6 +221,27 @@ class TaskState(APIModel):
     running: bool
     status: str
     message: str | None = None
+
+
+class RuntimeLogRead(APIModel):
+    id: int
+    project_id: int
+    job_id: int | None = None
+    segment_id: int | None = None
+    chapter_id: int | None = None
+    level: str
+    event_type: str
+    message: str
+    details_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class RuntimeLogPage(APIModel):
+    items: list[RuntimeLogRead]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 class CostEstimate(APIModel):

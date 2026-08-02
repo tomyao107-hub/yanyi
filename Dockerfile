@@ -87,6 +87,14 @@ RUN mkdir -p /var/lib/trans/uploads /var/lib/trans/exports \
     && chown -R "$APP_UID:$APP_GID" /var/lib/trans \
     && chmod -R u=rwX,g=,o= /var/lib/trans
 
+# Bake version identity into the image so the app and host-side tooling can
+# always report which build is running. /app is world-readable.
+ARG VERSION=0.0.0-dev
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+RUN printf '{"version":"%s","git_sha":"%s","build_time":"%s"}\n' \
+      "$VERSION" "$GIT_SHA" "$BUILD_TIME" > /app/version.json
+
 USER trans:trans
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/trans-entrypoint"]

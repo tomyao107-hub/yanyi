@@ -1,6 +1,7 @@
 export const queryKeys = {
   authSession: ["auth", "session"] as const,
   runtimeSettings: ["settings", "runtime"] as const,
+  systemVersion: ["system", "version"] as const,
   providerCredentials: ["settings", "credentials"] as const,
   modelProfiles: ["settings", "model-profiles"] as const,
   promptTemplates: ["settings", "prompt-templates"] as const,
@@ -12,6 +13,6 @@ export const queryKeys = {
   glossary: (id: number) => ["glossary", id] as const,
   qa: (id: number) => ["qa", id] as const,
   tmStats: (id: number) => ["tm-stats", id] as const,
-  runtimeLogs: (id: number, level?: string) =>
-    ["runtime-logs", id, level ?? "all"] as const,
+  runtimeLogs: (id: number, level?: string, eventType?: string) =>
+    ["runtime-logs", id, level ?? "all", eventType ?? "all"] as const,
 };

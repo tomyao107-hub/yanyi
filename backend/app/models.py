@@ -986,6 +986,38 @@ class AuditEvent(SQLModel, table=True):
     created_at: str = Field(default_factory=utc_now, sa_column=Column(Text, nullable=False))
 
 
+class ReleaseRecord(SQLModel, table=True):
+    """A boot/install/rollback event for the running build, shown in the UI."""
+
+    __tablename__ = "release_record"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('boot', 'install', 'rollback')",
+            name="ck_release_record_kind",
+        ),
+        CheckConstraint(
+            "status IN ('ok', 'failed')",
+            name="ck_release_record_status",
+        ),
+        Index("ix_release_record_version", "version"),
+        Index("ix_release_record_created_at", "created_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    version: str = Field(sa_column=Column(Text, nullable=False))
+    git_sha: str | None = Field(default=None, sa_column=Column(Text))
+    kind: str = Field(
+        default="boot",
+        sa_column=Column(Text, nullable=False, server_default="boot"),
+    )
+    status: str = Field(
+        default="ok",
+        sa_column=Column(Text, nullable=False, server_default="ok"),
+    )
+    detail: str | None = Field(default=None, sa_column=Column(Text))
+    created_at: str = Field(default_factory=utc_now, sa_column=Column(Text, nullable=False))
+
+
 class InstanceLease(SQLModel, table=True):
     __tablename__ = "instance_lease"
     __table_args__ = (

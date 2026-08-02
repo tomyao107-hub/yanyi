@@ -13,6 +13,7 @@ import {
   RotateCw,
   Settings2,
   Square,
+  SquareTerminal,
   X,
 } from "lucide-react";
 import {
@@ -31,7 +32,7 @@ import {
   type QueryKey,
 } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, errorMessage, projectProgress } from "../api/client";
 import { queryKeys } from "../api/queryKeys";
 import type {
@@ -440,6 +441,16 @@ export function WorkbenchPage() {
     setLocateTarget(id);
   }, []);
 
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const raw = searchParams.get("segment");
+    if (!raw) return;
+    const id = Number(raw);
+    if (Number.isFinite(id)) locateSegment(id);
+    // 从日志页跳转定位段落，仅在此次挂载时生效
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (locateTarget === null) return;
     const index = segments.findIndex((segment) => segment.id === locateTarget);
@@ -607,6 +618,14 @@ export function WorkbenchPage() {
           >
             <Settings2 className="size-4" />
           </button>
+          <Link
+            to={`/projects/${projectId}/logs`}
+            className="icon-btn hidden sm:inline-flex"
+            aria-label="查看运行日志"
+            title="查看运行日志"
+          >
+            <SquareTerminal className="size-4" />
+          </Link>
           <button type="button" className="btn-secondary hidden sm:inline-flex" onClick={() => setExportOpen(true)}>
             <Download className="size-4" />
             导出

@@ -528,3 +528,25 @@ class MessageResponse(APIModel):
 class HealthResponse(APIModel):
     status: Literal["ok"]
     version: str
+    git_sha: str | None = None
+
+
+class ReleaseRecordRead(APIModel):
+    id: int
+    version: str
+    git_sha: str | None = None
+    kind: str
+    status: str
+    detail: str | None = None
+    created_at: str
+
+
+class VersionInfo(APIModel):
+    version: str
+    git_sha: str | None = None
+    build_time: str | None = None
+    code_schema_head: str
+    db_schema_revision: str | None = None
+    schema_ok: bool
+    releases: list[ReleaseRecordRead]
+    release_commands: list[str]

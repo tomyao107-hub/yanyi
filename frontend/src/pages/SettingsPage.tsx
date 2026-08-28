@@ -151,9 +151,13 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <form id="settings-form" onSubmit={submit} className="mt-8 space-y-5">
+      {/* Server-side settings contain their own forms and persist through API
+          mutations, so they must not be nested inside the local-settings form. */}
+      <div className="mt-8 space-y-5">
         <ServerSettings />
+      </div>
 
+      <form id="settings-form" onSubmit={submit} className="mt-5 space-y-5">
         <SettingSection
           icon={Cpu}
           title="翻译模型"

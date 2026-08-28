@@ -553,7 +553,7 @@ export function WorkbenchPage() {
     );
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] min-h-[38rem] flex-col overflow-hidden">
+    <div className="flex h-[calc(100dvh-4rem)] min-h-[38rem] flex-col overflow-hidden">
       <header className="shrink-0 border-b hairline bg-paper/70 px-3 py-3 dark:bg-ink-950/55 sm:px-5">
         <div className="mx-auto flex max-w-[1920px] items-center gap-3">
           <button type="button" className="icon-btn" onClick={() => navigate("/")} aria-label="返回书库" title="返回书库">
@@ -907,7 +907,7 @@ export function WorkbenchPage() {
               onClick={() => setSidebarOpen(false)}
               aria-label="关闭侧边栏"
             />
-            <aside className="fixed bottom-0 right-0 top-16 z-50 w-[min(90vw,23rem)] border-l hairline shadow-float lg:static lg:z-auto lg:block lg:w-auto lg:shadow-none">
+            <aside className="fixed bottom-0 right-0 top-16 z-50 min-h-0 w-[min(90vw,23rem)] overflow-hidden border-l hairline shadow-float lg:static lg:z-auto lg:block lg:h-full lg:w-auto lg:shadow-none">
               <button
                 type="button"
                 className="icon-btn absolute right-2 top-2 z-10 bg-white/80 lg:hidden dark:bg-ink-900/80"

@@ -25,28 +25,40 @@
 git_sha 校验改为读取实际运行容器的版本文件，缺失或不匹配都导致失败。
 更新了发布文档和 Docker E2E 的备份数断言。
 
+真实容器验证发现受限 umask 解压会使迁移目录仅 root 可读，现已在 Dockerfile
+显式规范应用资产读取权限。隔离 E2E 使用独立镜像仓库、项目和卷，清理前核对配置，
+支持清理前次失败留下的隔离镜像标签。修复了密钥挂载目标、UID 权限和 Caddyfile 路径。
+远程执行器统一使用 POSIX 路径、远端真实路径护栏及固定 SSH 主机指纹，并同时读取输出两条流。
+
 ## 已通过的验证
 
 | 验证 | 结果 |
 | --- | --- |
 | Python 3.12.14 独立虚拟环境 + requirements.lock + dev 依赖 | 安装成功 |
-| 后端全量 pytest（包含新增发布与日志接口回归） | 99 passed，165.27 秒 |
+| 后端全量 pytest（包含发布、日志及远程执行器回归） | 129 passed |
 | 前端全量 Vitest（含密钥流程、日志分页／过滤／清空回归） | 12 passed |
 | TypeScript + Vite 生产构建 | 通过 |
-| Ruff：backend、deploy/release.py | 通过 |
+| Ruff：backend、deploy/release.py、deploy/run_e2e_on_server.py | 通过 |
 | pip check | 通过 |
 | bash -n：entrypoint.sh、test_release_e2e.sh | 通过 |
 | git diff --check | 通过 |
+| 服务器真实 Docker E2E | 47 passed，0 failed |
 
 后端存在两条非失败警告：Starlette 的 httpx 测试接口弃用提示，以及 project/stored_artifact 相互外键引起的 SQLAlchemy 排序提示。
-发布流程的 Docker 调用边界在 9 项回归测试中使用模拟；这不等于真实容器端到端验证。
+发布边界与隔离配置共 10 项测试，远程执行器 29 项离线测试；另有真实 Docker 端到端验证。
 
-## 合入 main 前的剩余门禁
+## Docker 验证与合并
 
-本机 Windows 和 Ubuntu-24.04 WSL 均未安装 Docker。真实 Docker E2E 尚未执行。
-已向用户询问：在本机 WSL 安装 Docker、使用用户指定服务器的隔离项目，或确认本次验证仅要求现有测试全量通过。
-收到选择后执行相应验证；通过后才能将集成分支合入 main。
-main 保持原提交，本记录不代表合并或推送已完成。
+用户授权在指定服务器验证及部署。Docker 28.0.1 / Compose 2.32.1 上运行冻结源码
+`0f054c2`，隔离工作区 `/opt/trans-e2e-codex-20261001`，项目 `trans-e2e`，
+独立卷 `trans-e2e_trans-state`，无发布端口，使用一次性密钥。
+首次安装、升级到测试迁移 0006、降级至 0005、坏版本安装失败自动恢复等共 47 项通过。
+隔离容器、卷和测试镜像已清理；4 个非空备份与 manifest 留存服务器供复查。
+本地完整日志：`work/remote-e2e.log`。
+
+验证门禁已满足，以 fast-forward 将集成分支合入本地 main。未推送远端。
+正式部署继续保留原密钥与状态卷；旧镜像通过不可变 ID 登记为 legacy 回退版本，
+部署前保存原源码、配置和停止写入后的状态卷备份。正式部署结果在任务完成回复中报告。
 
 ## 首轮浏览中的既有观察
 

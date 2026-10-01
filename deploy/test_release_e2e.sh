@@ -15,12 +15,19 @@
 set -euo pipefail
 
 WORKSPACE="${E2E_WORKSPACE:-/opt/trans-e2e-workspace}"
+WORKSPACE="$(realpath -m "$WORKSPACE")"
+case "$WORKSPACE" in
+  /opt/trans-e2e-*) ;;
+  *) echo "错误: E2E_WORKSPACE 必须位于独立的 /opt/trans-e2e-* 目录"; exit 1 ;;
+esac
 SRCBASE="$WORKSPACE/srcbase"
 E2E_DIR="$WORKSPACE/e2e"
 RELEASES="$WORKSPACE/releases"
 RELEASE_PY="$SRCBASE/deploy/release.py"
 VOLUME="trans-e2e_trans-state"
-IMAGE=trans-linux
+IMAGE="trans-e2e-release-$(basename "$WORKSPACE")"
+export TRANS_RELEASE_IMAGE="$IMAGE"
+unset COMPOSE_PROJECT_NAME TRANS_PROJECT_NAME TRANS_VOLUME_NAME
 PUBLIC_ORIGIN="http://127.0.0.1:18080"
 
 PASSED=0
@@ -52,10 +59,10 @@ say "工作区: $WORKSPACE  源基座: $SRCBASE"
 
 # ---- 构建隔离环境 ---------------------------------------------------------
 rm -rf "$E2E_DIR" "$RELEASES" "$WORKSPACE/v110" "$WORKSPACE/v120bad"
-mkdir -p "$E2E_DIR/secrets" "$RELEASES"
+mkdir -p "$E2E_DIR/secrets" "$E2E_DIR/deploy" "$RELEASES"
 
 cp "$SRCBASE/compose.yml" "$E2E_DIR/compose.yml"
-cp "$SRCBASE/deploy/Caddyfile" "$E2E_DIR/Caddyfile"
+cp "$SRCBASE/deploy/Caddyfile" "$E2E_DIR/deploy/Caddyfile"
 
 umask 077
 if command -v openssl >/dev/null 2>&1; then
@@ -65,6 +72,7 @@ else
   head -c 32 /dev/urandom > "$E2E_DIR/secrets/master-key"
   head -c 32 /dev/urandom | base64 > "$E2E_DIR/secrets/admin-bootstrap-password"
 fi
+chown 10001:10001 "$E2E_DIR/secrets/master-key" "$E2E_DIR/secrets/admin-bootstrap-password"
 chmod 600 "$E2E_DIR/secrets/master-key" "$E2E_DIR/secrets/admin-bootstrap-password"
 
 cat > "$E2E_DIR/.env.e2e" <<ENV
@@ -100,7 +108,7 @@ services:
     volumes: !override
       - type: bind
         source: ./secrets/master-key
-        target: /run/secrets/master-key
+        target: /run/secrets/master_key
         read_only: true
       - type: bind
         source: ./secrets/admin-bootstrap-password
@@ -114,24 +122,27 @@ services:
     ports: !override []
     depends_on: !override
       app:
+    image: ${TRANS_RELEASE_IMAGE}:${TRANS_IMAGE_TAG:-latest}
         condition: service_started
 YAML
 
 cd "$E2E_DIR"
-COMPOSE_BASE=(docker compose --env-file .env.e2e -f compose.yml -f compose.e2e.yml)
+COMPOSE_BASE=(docker compose -p trans-e2e --env-file .env.e2e -f compose.yml -f compose.e2e.yml)
 RELEASE=(python3 "$RELEASE_PY" --compose-file compose.yml --override-file compose.e2e.yml --env-file .env.e2e)
-
-# 清理上次失败的残留（仅限 trans-e2e 命名空间）
-"${COMPOSE_BASE[@]}" down --remove-orphans >/dev/null 2>&1 || true
-docker volume rm "$VOLUME" >/dev/null 2>&1 || true
 
 # ---- 隔离守卫：项目名/卷名核对，绝不指向生产栈 ----------------------------
 CONFIG_JSON="$("${COMPOSE_BASE[@]}" config --format json)"
-PROJECT_NAME="$(printf '%s' "$CONFIG_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('name') or json.load(sys.stdin).get('project'))")"
+PROJECT_NAME="$(printf '%s' "$CONFIG_JSON" | python3 -c "import json,sys; c=json.load(sys.stdin); print(c.get('name') or c.get('project'))")"
 VOLUME_NAME="$(printf '%s' "$CONFIG_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['volumes']['trans-state']['name'])")"
 assert_eq "隔离项目名" "$PROJECT_NAME" "trans-e2e"
 assert_eq "隔离卷名" "$VOLUME_NAME" "trans-e2e_trans-state"
 [ "$PROJECT_NAME" = "trans-e2e" ] || { fail "拒绝继续: 项目名非 trans-e2e"; exit 1; }
+[ "$VOLUME_NAME" = "$VOLUME" ] || { fail "拒绝继续: 卷名非 trans-e2e_trans-state"; exit 1; }
+printf '%s' "$CONFIG_JSON" | python3 -c 'import json,sys,os; c=json.load(sys.stdin); assert c["services"]["app"]["image"].startswith(os.environ["TRANS_RELEASE_IMAGE"]+":"), "wrong app image"; assert not any(s.get("ports") for s in c["services"].values()), "E2E must not publish ports"'
+
+# 配置核对后再清理上次失败的残留（仅限 trans-e2e 命名空间）
+"${COMPOSE_BASE[@]}" down --remove-orphans >/dev/null 2>&1 || true
+docker volume rm "$VOLUME" >/dev/null 2>&1 || true
 
 # ---- 打包假版本归档 -------------------------------------------------------
 # 从 SRCBASE（当前工作树快照）复制出 v1.0.0；在其上追加 0006 迁移为 v1.1.0；

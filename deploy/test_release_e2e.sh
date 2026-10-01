@@ -143,6 +143,9 @@ printf '%s' "$CONFIG_JSON" | python3 -c 'import json,sys,os; c=json.load(sys.std
 # 配置核对后再清理上次失败的残留（仅限 trans-e2e 命名空间）
 "${COMPOSE_BASE[@]}" down --remove-orphans >/dev/null 2>&1 || true
 docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+# A previous failed run may have left version images. init must start with no
+# installed version; only remove tags belonging to this isolated image repo.
+for v in 1.0.0 1.1.0 1.2.0-bad; do docker rmi "$IMAGE:$v" >/dev/null 2>&1 || true; done
 
 # ---- 打包假版本归档 -------------------------------------------------------
 # 从 SRCBASE（当前工作树快照）复制出 v1.0.0；在其上追加 0006 迁移为 v1.1.0；

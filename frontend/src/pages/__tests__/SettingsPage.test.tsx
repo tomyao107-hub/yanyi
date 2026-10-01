@@ -7,6 +7,10 @@ vi.mock("../../components/ServerSettings", () => ({
   ServerSettings: () => <form aria-label="服务器配置" />,
 }));
 
+vi.mock("../../components/SystemStatus", () => ({
+  SystemStatus: () => <div>系统与更新</div>,
+}));
+
 vi.mock("../../store/settings", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../store/settings")>();
   return {

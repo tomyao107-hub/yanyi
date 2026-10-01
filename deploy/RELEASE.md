@@ -61,16 +61,18 @@ python3 deploy/release.py history
 
 1. **install**：解压 → 校验 `src/Dockerfile` → `docker build -t trans-linux:<版本>`
    （写入 VERSION/GIT_SHA/BUILD_TIME，烘焙进 `/app/version.json`）→ 读取新镜像迁移头 →
-   **用当前镜像对 trans-state 卷做 tar 备份**（缺失/0 字节则硬中止）→ 用**新镜像**
-   `alembic upgrade head`（旧容器继续服务，失败时栈不动）→ 原子改写 `.env.production`
-   的 `TRANS_IMAGE_TAG` → `up -d app` → 轮询健康检查（超时 90s；若有发布端口还
-   核对 `/health/live` 的 git_sha）。任何一步失败：自动回滚（若 DB 已变则用新镜像
+   停止 app，等待 SQLite 写入与任务退出 → **对 trans-state 卷做 tar 备份**
+   （首装也备份，缺失/0 字节则硬中止）→ 用**新镜像** `alembic upgrade head` →
+   原子改写 `.env.production` 的 `TRANS_IMAGE_TAG` → `up -d app` → 轮询健康检查
+   （超时 90s，并从实际运行容器的版本文件核对 git_sha）。任何一步失败：自动回滚（若 DB 已变则用新镜像
    `downgrade` 回旧迁移头 → 切回旧 tag → up → 健康检查），回滚也失败则打印备份路径。
-2. **rollback**：备份 → 若目标 schema_revision ≠ 当前 DB 修订，用**当前镜像**
+2. **rollback**：停止 app → 备份 → 若目标 schema_revision ≠ 当前 DB 修订，用**当前镜像**
    `alembic downgrade <目标修订>`（先降级再切 tag）→ 切 tag → up → 健康检查 →
-   目标容器 entrypoint 的 `upgrade head` 为幂等 no-op。失败自动恢复原版本。
+   目标容器 entrypoint 的 `upgrade head` 为幂等 no-op。失败先停止目标容器，
+   恢复原 schema 修订，再切回原镜像并启动。
 3. **健康检查**：compose healthcheck（python urllib GET `/health/live`）判定
-   healthy/unhealthy；`/health/live` 现返回 `git_sha`，用于核对跑的是预期镜像。
+   healthy/unhealthy；通过 `docker exec` 读取运行容器的 `/app/version.json` 核对
+   git_sha，避免端口未发布或 HTTPS 导致校验被跳过。
 
 ## 安全护栏（代码强制）
 

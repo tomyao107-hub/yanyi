@@ -152,19 +152,22 @@ export function LogsPage() {
     mutationFn: () => api.deleteRuntimeLogs(projectId),
     onSuccess: () => {
       setConfirmClear(false);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.runtimeLogs(projectId) });
+      setOlder([]);
+      setHasMore(false);
+      void queryClient.invalidateQueries({ queryKey: ["runtime-logs", projectId] });
       notify("运行日志已清空。", "success");
     },
     onError: (error) => notify(errorMessage(error), "error"),
   });
 
   const newest = logsQuery.data?.items ?? [];
-  const rows = [...newest, ...older];
+  const rows = [...new Map([...older, ...newest].map((entry) => [entry.id, entry])).values()]
+    .sort((a, b) => b.id - a.id);
   const total = logsQuery.data?.total ?? 0;
   const canLoadMore = hasMore || (older.length === 0 && Boolean(logsQuery.data?.has_more));
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] min-h-[38rem] flex-col overflow-hidden">
+    <div className="flex h-[calc(100dvh-4rem)] min-h-[38rem] flex-col overflow-hidden">
       <header className="shrink-0 border-b hairline bg-paper/70 px-3 py-3 dark:bg-ink-950/55 sm:px-5">
         <div className="mx-auto flex max-w-[1920px] items-center gap-3">
           <button

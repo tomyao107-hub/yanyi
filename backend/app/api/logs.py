@@ -4,7 +4,8 @@ import math
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import delete as sa_delete, func
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..db import get_session

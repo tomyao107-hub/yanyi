@@ -16,11 +16,16 @@ import type { ModelProfile, ModelProfileInput, ProviderOption } from "../api/typ
 import { useToast } from "../store/toast";
 import { EmptyMessage, ServerSection, StatusPill } from "./ServerSettingsShared";
 
+type CredentialMode = "reuse" | "new" | "none";
+
 interface ProfileDraft {
   displayName: string;
   provider: string;
   modelId: string;
+  credentialMode: CredentialMode;
   credentialId: string;
+  newCredentialLabel: string;
+  newCredentialKey: string;
   baseUrl: string;
   maxConcurrency: number;
   contextWindowTokens: number;
@@ -34,7 +39,10 @@ const emptyProfile: ProfileDraft = {
   displayName: "",
   provider: "custom",
   modelId: "",
+  credentialMode: "new",
   credentialId: "",
+  newCredentialLabel: "",
+  newCredentialKey: "",
   baseUrl: "",
   maxConcurrency: 4,
   contextWindowTokens: 128000,
@@ -49,7 +57,10 @@ function profileToDraft(profile: ModelProfile): ProfileDraft {
     displayName: profile.display_name,
     provider: profile.provider,
     modelId: profile.litellm_model_id,
+    credentialMode: profile.credential_id === null ? "none" : "reuse",
     credentialId: profile.credential_id === null ? "" : String(profile.credential_id),
+    newCredentialLabel: "",
+    newCredentialKey: "",
     baseUrl: profile.base_url ?? "",
     maxConcurrency: profile.max_concurrency,
     contextWindowTokens: profile.context_window_tokens,
@@ -96,6 +107,11 @@ export function ModelProfilesSection({
   const refreshProfiles = () => queryClient.invalidateQueries({ queryKey: queryKeys.modelProfiles });
   const refreshCredentials = () =>
     queryClient.invalidateQueries({ queryKey: queryKeys.providerCredentials });
+
+  const createInlineCredential = useMutation({
+    mutationFn: api.createProviderCredential,
+    onSuccess: () => refreshCredentials(),
+  });
 
   const saveProfile = useMutation({
     mutationFn: (input: ModelProfileInput) =>
@@ -145,8 +161,9 @@ export function ModelProfilesSection({
     setFormOpen(true);
   };
 
-  const submitProfile = (event: FormEvent) => {
+  const submitProfile = async (event: FormEvent) => {
     event.preventDefault();
+    if (saveProfile.isPending || createInlineCredential.isPending) return;
     let generationParams: Record<string, unknown>;
     try {
       const parsed = JSON.parse(draft.generationParams || "{}") as unknown;
@@ -158,11 +175,44 @@ export function ModelProfilesSection({
       notify(error instanceof Error ? error.message : "生成参数不是有效 JSON。", "error");
       return;
     }
+    let credentialId: number | null = null;
+    if (draft.credentialMode === "reuse") {
+      if (!draft.credentialId) {
+        notify("请选择要复用的已保存密钥。", "error");
+        return;
+      }
+      credentialId = Number(draft.credentialId);
+    } else if (draft.credentialMode === "new") {
+      const apiKey = draft.newCredentialKey.trim();
+      if (!apiKey) {
+        notify("请输入新的 API Key，或改用其他密钥来源。", "error");
+        return;
+      }
+      try {
+        const created = await createInlineCredential.mutateAsync({
+          provider: draft.provider,
+          profile_label: draft.newCredentialLabel.trim() || draft.displayName.trim(),
+          api_key: apiKey,
+        });
+        credentialId = created.id;
+        // Retain the encrypted binding if profile saving fails, so retrying
+        // neither creates duplicate credentials nor keeps the key in the form.
+        setDraft((current) => ({
+          ...current,
+          credentialMode: "reuse",
+          credentialId: String(created.id),
+          newCredentialKey: "",
+        }));
+      } catch (error) {
+        notify(errorMessage(error), "error");
+        return;
+      }
+    }
     saveProfile.mutate({
       display_name: draft.displayName.trim(),
       provider: draft.provider,
       litellm_model_id: draft.modelId.trim(),
-      credential_id: draft.credentialId ? Number(draft.credentialId) : null,
+      credential_id: credentialId,
       base_url: draft.baseUrl.trim() || null,
       enabled: draft.enabled,
       is_default: draft.isDefault,
@@ -177,7 +227,7 @@ export function ModelProfilesSection({
     <ServerSection
       icon={Server}
       title="模型配置"
-      description="每个模型可独立设置供应商、API 地址、凭据与并发参数，支持多个供应商共存。"
+      description="每个模型可独立设置供应商、API 地址、密钥与并发参数；密钥可以直接录入或复用。"
       action={
         <button type="button" className="btn-secondary shrink-0" onClick={openNewProfile}>
           <Plus className="size-4" />
@@ -242,24 +292,102 @@ export function ModelProfilesSection({
                 ))}
               </datalist>
             </div>
-            <div>
-              <label className="field-label" htmlFor="profile-credential">API 凭据</label>
-              <select
-                id="profile-credential"
-                className="field"
-                value={draft.credentialId}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, credentialId: event.target.value }))
-                }
-              >
-                <option value="">不使用已保存凭据</option>
-                {compatibleCredentials.map((credential) => (
-                  <option key={credential.id} value={credential.id}>
-                    {credential.profile_label}（{credential.masked_key}）
-                  </option>
-                ))}
-              </select>
-            </div>
+              <div className="sm:col-span-2">
+                <span className="field-label">API 密钥</span>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    ["new", "输入新密钥"],
+                    ["reuse", "复用已保存"],
+                    ["none", "不使用密钥"],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`min-h-10 rounded-lg border px-3 text-sm font-medium transition ${
+                        draft.credentialMode === mode
+                          ? "border-cinnabar-600 bg-cinnabar-50 text-cinnabar-800 dark:bg-cinnabar-950/40 dark:text-cinnabar-300"
+                          : "border-ink-200 bg-white text-ink-600 hover:bg-ink-50 dark:border-ink-700 dark:bg-ink-900 dark:text-ink-300"
+                      }`}
+                      aria-pressed={draft.credentialMode === mode}
+                      onClick={() =>
+                        setDraft((current) => ({ ...current, credentialMode: mode }))
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {draft.credentialMode === "new" && (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="field-label" htmlFor="profile-new-key">API Key</label>
+                      <input
+                        id="profile-new-key"
+                        type="password"
+                        autoComplete="new-password"
+                        className="field font-mono"
+                        value={draft.newCredentialKey}
+                        onChange={(event) =>
+                          setDraft((current) => ({
+                            ...current,
+                            newCredentialKey: event.target.value,
+                          }))
+                        }
+                        placeholder="输入后将立即加密，之后不可查看明文"
+                      />
+                    </div>
+                    <div>
+                      <label className="field-label" htmlFor="profile-new-label">密钥名称（可选）</label>
+                      <input
+                        id="profile-new-label"
+                        className="field"
+                        value={draft.newCredentialLabel}
+                        onChange={(event) =>
+                          setDraft((current) => ({
+                            ...current,
+                            newCredentialLabel: event.target.value,
+                          }))
+                        }
+                        placeholder="留空则使用模型名称"
+                      />
+                    </div>
+                  </div>
+                )}
+                {draft.credentialMode === "reuse" && (
+                  <div className="mt-3">
+                    {compatibleCredentials.length === 0 ? (
+                      <p className="flex items-start gap-1.5 rounded-lg border hairline bg-ink-50/60 px-3 py-2.5 text-xs leading-5 text-ink-500 dark:bg-ink-950/30">
+                        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                        该供应商还没有已保存的密钥。改用“输入新密钥”，或在“API 凭据”中添加。
+                      </p>
+                    ) : (
+                      <select
+                        className="field"
+                        aria-label="选择已保存的 API 密钥"
+                        value={draft.credentialId}
+                        onChange={(event) =>
+                          setDraft((current) => ({
+                            ...current,
+                            credentialId: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">选择已保存的密钥…</option>
+                        {compatibleCredentials.map((credential) => (
+                          <option key={credential.id} value={credential.id}>
+                            {credential.profile_label}（{credential.masked_key}）
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+                {draft.credentialMode === "none" && (
+                  <p className="mt-3 text-xs leading-5 text-ink-500">
+                    不绑定密钥，改由后端环境变量提供供应商密钥（适用于本地模型或已在服务器配置的密钥）。
+                  </p>
+                )}
+              </div>
             <div className="sm:col-span-2">
               <label className="field-label" htmlFor="profile-url">
                 API 地址{selectedProvider?.requires_base_url ? "（必填）" : "（可选）"}
@@ -386,7 +514,7 @@ export function ModelProfilesSection({
               >
                 取消
               </button>
-              <button type="submit" className="btn-primary" disabled={saveProfile.isPending}>
+              <button type="submit" className="btn-primary" disabled={saveProfile.isPending || createInlineCredential.isPending}>
                 <Save className="size-4" />
                 {editId === null ? "创建配置" : "保存修改"}
               </button>

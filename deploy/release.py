@@ -27,12 +27,10 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tarfile
 import time
-import urllib.request
 from pathlib import Path
 
 DEFAULT_COMPOSE_FILE = "compose.yml"
@@ -92,14 +90,14 @@ def log(message: str) -> None:
 
 
 def utcnow() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _run(cmd: list[str], *, capture: bool = False, cwd: str | None = None) -> str | None:
     try:
         result = subprocess.run(cmd, capture_output=capture, text=True, cwd=cwd)
     except FileNotFoundError as exc:
-        raise ReleaseError(f"未找到命令 {cmd[0]}（{exc}）")
+        raise ReleaseError(f"未找到命令 {cmd[0]}（{exc}）") from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise ReleaseError(f"命令失败: {' '.join(cmd)}\n{detail}")
@@ -157,6 +155,7 @@ class Context:
 # ---------------------------------------------------------------------------
 # docker compose 探测
 # ---------------------------------------------------------------------------
+
 
 def _compose_config(ctx: Context) -> dict:
     if ctx._config is None:
@@ -235,10 +234,21 @@ def _published_http_port(ctx: Context) -> int | None:
 # 容器内只读探测与迁移
 # ---------------------------------------------------------------------------
 
+
 def _image_identity(image: str) -> dict | None:
     out = _run(
-        ["docker", "run", "--rm", "--network", "none", "--entrypoint", "python",
-         f"{IMAGE_NAME}:{image}", "-c", PY_VERSION_JSON],
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "python",
+            f"{IMAGE_NAME}:{image}",
+            "-c",
+            PY_VERSION_JSON,
+        ],
         capture=True,
     )
     if not out:
@@ -251,8 +261,20 @@ def _image_identity(image: str) -> dict | None:
 
 def _image_schema_head(image: str) -> str | None:
     out = _run(
-        ["docker", "run", "--rm", "--network", "none", "--workdir", "/app",
-         "--entrypoint", "python", f"{IMAGE_NAME}:{image}", "-c", PY_SCHEMA_HEAD],
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--workdir",
+            "/app",
+            "--entrypoint",
+            "python",
+            f"{IMAGE_NAME}:{image}",
+            "-c",
+            PY_SCHEMA_HEAD,
+        ],
         capture=True,
     )
     return out.strip() or None
@@ -261,8 +283,20 @@ def _image_schema_head(image: str) -> str | None:
 def _read_db_revision(ctx: Context, image: str) -> str | None:
     volume = _ensure_volume(ctx)
     out = _run(
-        ["docker", "run", "--rm", "--network", "none", "-v", f"{volume}:/var/lib/trans",
-         "--entrypoint", "python", f"{IMAGE_NAME}:{image}", "-c", PY_READ_REV],
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "-v",
+            f"{volume}:/var/lib/trans",
+            "--entrypoint",
+            "python",
+            f"{IMAGE_NAME}:{image}",
+            "-c",
+            PY_READ_REV,
+        ],
         capture=True,
     ).strip()
     if out == "__MISSING__":
@@ -272,13 +306,30 @@ def _read_db_revision(ctx: Context, image: str) -> str | None:
 
 def _alembic(ctx: Context, image: str, command: str, target: str) -> None:
     volume = _ensure_volume(ctx)
-    _run([
-        "docker", "run", "--rm", "--network", "none", "-v", f"{volume}:/var/lib/trans",
-        "--env", "TRANS_DATABASE_URL=sqlite:////var/lib/trans/trans.db",
-        "--workdir", "/app", "--entrypoint", "python",
-        f"{IMAGE_NAME}:{image}", "-m", "alembic", "-c", "/app/backend/alembic.ini",
-        command, target,
-    ])
+    _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "-v",
+            f"{volume}:/var/lib/trans",
+            "--env",
+            "TRANS_DATABASE_URL=sqlite:////var/lib/trans/trans.db",
+            "--workdir",
+            "/app",
+            "--entrypoint",
+            "python",
+            f"{IMAGE_NAME}:{image}",
+            "-m",
+            "alembic",
+            "-c",
+            "/app/backend/alembic.ini",
+            command,
+            target,
+        ]
+    )
 
 
 def _backup(ctx: Context, image: str, label: str) -> Path:
@@ -288,13 +339,29 @@ def _backup(ctx: Context, image: str, label: str) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     name = f"backup-{stamp}-{label}.tar.gz"
     dest = ctx.backups_dir / name
-    _run([
-        "docker", "run", "--rm", "--network", "none",
-        "-v", f"{volume}:/var/lib/trans",
-        "-v", f"{str(ctx.backups_dir.resolve())}:/backups",
-        "--user", "root", "--entrypoint", "tar",
-        f"{IMAGE_NAME}:{image}", "-czf", f"/backups/{name}", "-C", "/var/lib/trans", ".",
-    ])
+    _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "-v",
+            f"{volume}:/var/lib/trans",
+            "-v",
+            f"{str(ctx.backups_dir.resolve())}:/backups",
+            "--user",
+            "root",
+            "--entrypoint",
+            "tar",
+            f"{IMAGE_NAME}:{image}",
+            "-czf",
+            f"/backups/{name}",
+            "-C",
+            "/var/lib/trans",
+            ".",
+        ]
+    )
     if not dest.exists() or dest.stat().st_size == 0:
         raise ReleaseError(f"备份文件缺失或为空，中止操作: {dest}")
     return dest
@@ -303,6 +370,7 @@ def _backup(ctx: Context, image: str, label: str) -> Path:
 # ---------------------------------------------------------------------------
 # tag 切换、容器重建、健康检查
 # ---------------------------------------------------------------------------
+
 
 def _switch_tag(ctx: Context, version: str) -> None:
     path = Path(ctx.env_file)
@@ -332,6 +400,12 @@ def _up(ctx: Context) -> None:
     _run([*ctx.compose_args, "up", "-d", "app"])
 
 
+def _stop(ctx: Context) -> None:
+    # Quiesce SQLite and the durable worker before copying the state volume or
+    # changing schema. A tar of a live WAL database is not a consistent backup.
+    _run([*ctx.compose_args, "stop", "app"])
+
+
 def _health_check(ctx: Context, expected_sha: str | None = None) -> None:
     cid = _ps_app(ctx)
     if not cid:
@@ -355,23 +429,21 @@ def _health_check(ctx: Context, expected_sha: str | None = None) -> None:
 
 
 def _crosscheck_git_sha(ctx: Context, expected_sha: str) -> None:
-    port = _published_http_port(ctx)
-    if not port:
-        return
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health/live", timeout=5) as resp:
-            payload = json.load(resp)
-        actual = (payload or {}).get("git_sha")
-    except Exception as exc:
-        log(f"跳过 git_sha 校验（无法访问 http://127.0.0.1:{port}）: {exc}")
-        return
-    if actual and actual != expected_sha:
+    cid = _ps_app(ctx)
+    if not cid:
+        raise ReleaseError("找不到 app 容器，无法校验 git_sha")
+    payload = json.loads(
+        _run(["docker", "exec", cid, "python", "-c", PY_VERSION_JSON], capture=True)
+    )
+    actual = (payload or {}).get("git_sha")
+    if actual != expected_sha:
         raise ReleaseError(f"git_sha 校验失败: 预期 {expected_sha}，实际 {actual}")
 
 
 # ---------------------------------------------------------------------------
 # 归档解压
 # ---------------------------------------------------------------------------
+
 
 def _safe_extract_legacy(tar: tarfile.TarFile, dest: Path) -> None:
     dest = dest.resolve()
@@ -395,12 +467,16 @@ def _extract_archive(archive: Path, dest: Path) -> None:
             try:
                 tar.extractall(tmp, filter="data")
             except tarfile.TarError as exc:
-                raise ReleaseError(f"归档不安全，拒绝解压: {exc}")
+                raise ReleaseError(f"归档不安全，拒绝解压: {exc}") from exc
             except TypeError:
                 _safe_extract_legacy(tar, tmp)
         children = [child for child in tmp.iterdir()]
         wrapper = None
-        if len(children) == 1 and children[0].is_dir() and children[0].name in ("src", "trans-linux"):
+        if (
+            len(children) == 1
+            and children[0].is_dir()
+            and children[0].name in ("src", "trans-linux")
+        ):
             wrapper = children[0]
         source = wrapper or tmp
         if dest.exists():
@@ -439,11 +515,10 @@ def _validate_version(version: str) -> None:
 # manifest
 # ---------------------------------------------------------------------------
 
+
 def _load_manifest(ctx: Context) -> dict:
     if not ctx.manifest_path.exists():
-        raise ReleaseError(
-            f"未找到 manifest（{ctx.manifest_path}），请先运行 init"
-        )
+        raise ReleaseError(f"未找到 manifest（{ctx.manifest_path}），请先运行 init")
     return json.loads(ctx.manifest_path.read_text(encoding="utf-8"))
 
 
@@ -451,15 +526,19 @@ def _save_manifest(ctx: Context, manifest: dict) -> None:
     _atomic_write(ctx.manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 
 
-def _record_operation(manifest: dict, op: str, version: str | None, result: str, detail: str) -> None:
+def _record_operation(
+    manifest: dict, op: str, version: str | None, result: str, detail: str
+) -> None:
     operations = manifest.setdefault("operations", [])
-    operations.append({
-        "ts": utcnow(),
-        "op": op,
-        "version": version,
-        "result": result,
-        "detail": detail,
-    })
+    operations.append(
+        {
+            "ts": utcnow(),
+            "op": op,
+            "version": version,
+            "result": result,
+            "detail": detail,
+        }
+    )
     manifest["operations"] = operations[-OPERATIONS_KEEP:]
 
 
@@ -480,8 +559,8 @@ def _release_lock(ctx: Context):
     ctx.releases_dir.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(str(ctx.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        raise ReleaseError(f"已有 release.py 正在运行（{ctx.lock_path} 已存在）")
+    except FileExistsError as exc:
+        raise ReleaseError(f"已有 release.py 正在运行（{ctx.lock_path} 已存在）") from exc
     try:
         os.write(fd, str(os.getpid()).encode())
         yield
@@ -499,6 +578,7 @@ def _release_lock(ctx: Context):
 # ---------------------------------------------------------------------------
 # 命令
 # ---------------------------------------------------------------------------
+
 
 def cmd_init(ctx: Context) -> int:
     ctx.releases_dir.mkdir(parents=True, exist_ok=True)
@@ -545,13 +625,15 @@ def cmd_init(ctx: Context) -> int:
         "image": IMAGE_NAME,
         "current": current,
         "releases": releases,
-        "operations": [{
-            "ts": utcnow(),
-            "op": "init",
-            "version": current,
-            "result": "ok",
-            "detail": detail,
-        }],
+        "operations": [
+            {
+                "ts": utcnow(),
+                "op": "init",
+                "version": current,
+                "result": "ok",
+                "detail": detail,
+            }
+        ],
     }
     _save_manifest(ctx, manifest)
     log(f"已初始化 manifest（current={current or '无'}, 卷={volume}）")
@@ -633,15 +715,23 @@ def cmd_install(ctx: Context, archive: Path, version: str, git_sha: str) -> int:
 
     built_at = utcnow()
     log(f"构建镜像 {IMAGE_NAME}:{version}（git_sha={git_sha}）")
-    _run([
-        "docker", "build",
-        "-f", str(src_dir / "Dockerfile"),
-        "-t", f"{IMAGE_NAME}:{version}",
-        "--build-arg", f"VERSION={version}",
-        "--build-arg", f"GIT_SHA={git_sha}",
-        "--build-arg", f"BUILD_TIME={built_at}",
-        str(src_dir),
-    ])
+    _run(
+        [
+            "docker",
+            "build",
+            "-f",
+            str(src_dir / "Dockerfile"),
+            "-t",
+            f"{IMAGE_NAME}:{version}",
+            "--build-arg",
+            f"VERSION={version}",
+            "--build-arg",
+            f"GIT_SHA={git_sha}",
+            "--build-arg",
+            f"BUILD_TIME={built_at}",
+            str(src_dir),
+        ]
+    )
     new_head = _image_schema_head(version)
     log(f"新镜像迁移头: {new_head}")
 
@@ -651,10 +741,12 @@ def cmd_install(ctx: Context, archive: Path, version: str, git_sha: str) -> int:
 
     backup_path: Path | None = None
     changed = False
+    stopped = False
     try:
-        if old_tag:
-            backup_path = _backup(ctx, old_tag, version)
-            log(f"已备份（只增）: {backup_path.name}")
+        _stop(ctx)
+        stopped = True
+        backup_path = _backup(ctx, old_tag or version, version)
+        log(f"已备份（只增）: {backup_path.name}")
         changed = True
         if not ctx.no_migrate:
             _alembic(ctx, version, "upgrade", "head")
@@ -667,10 +759,11 @@ def cmd_install(ctx: Context, archive: Path, version: str, git_sha: str) -> int:
         _record_operation(manifest, "install", version, "failed", str(exc))
         _save_manifest(ctx, manifest)
         log(f"安装失败: {exc}")
-        if changed and old_tag and current:
+        if stopped and old_tag and current:
             try:
                 log("自动回滚…")
-                if not ctx.no_migrate:
+                _stop(ctx)
+                if changed and not ctx.no_migrate:
                     old_rev = manifest["releases"][current].get("schema_revision")
                     db_rev = _read_db_revision(ctx, version)
                     if old_rev and db_rev and db_rev != old_rev:
@@ -679,13 +772,19 @@ def cmd_install(ctx: Context, archive: Path, version: str, git_sha: str) -> int:
                 _switch_tag(ctx, old_tag)
                 _up(ctx)
                 current_sha = manifest["releases"][current].get("git_sha")
-                _health_check(ctx, current_sha if current_sha and current_sha != "unknown" else None)
+                _health_check(
+                    ctx, current_sha if current_sha and current_sha != "unknown" else None
+                )
                 log("已回滚至原版本")
             except Exception as rollback_exc:
                 print(f"[release] 自动回滚失败: {rollback_exc}", file=sys.stderr)
                 if backup_path:
                     print(f"[release] 备份保留在: {backup_path}", file=sys.stderr)
                 return 1
+        elif stopped:
+            # Even an unversioned installation may have been running before
+            # init. Restore its compose service if backup/migration fails.
+            _up(ctx)
         return 1
 
     manifest["releases"][version] = {
@@ -699,7 +798,10 @@ def cmd_install(ctx: Context, archive: Path, version: str, git_sha: str) -> int:
     }
     manifest["current"] = version
     _record_operation(
-        manifest, "install", version, "ok",
+        manifest,
+        "install",
+        version,
+        "ok",
         f"backup={backup_path.name if backup_path else 'none'}",
     )
     _save_manifest(ctx, manifest)
@@ -728,17 +830,19 @@ def cmd_rollback(ctx: Context, target: str | None) -> int:
     current_tag = current_entry.get("tag") or current
     current_sha = current_entry.get("git_sha")
 
-    backup_path = _backup(ctx, current_tag, target)
-    log(f"已备份（只增）: {backup_path.name}")
+    backup_path: Path | None = None
+    schema_changed = False
     try:
+        _stop(ctx)
+        backup_path = _backup(ctx, current_tag, target)
+        log(f"已备份（只增）: {backup_path.name}")
         if not ctx.no_migrate:
             db_rev = _read_db_revision(ctx, current_tag)
             target_rev = entry.get("schema_revision")
             if not target_rev:
-                raise ReleaseError(
-                    f"目标版本 {target} 缺少 schema_revision，请使用 --no-migrate"
-                )
+                raise ReleaseError(f"目标版本 {target} 缺少 schema_revision，请使用 --no-migrate")
             if db_rev and db_rev != target_rev:
+                schema_changed = True
                 _alembic(ctx, current_tag, "downgrade", target_rev)
                 log(f"数据库已降级至 {target_rev}")
         _switch_tag(ctx, tag)
@@ -748,6 +852,12 @@ def cmd_rollback(ctx: Context, target: str | None) -> int:
         _record_operation(manifest, "rollback", target, "failed", str(exc))
         _save_manifest(ctx, manifest)
         try:
+            _stop(ctx)
+            if schema_changed:
+                current_rev = current_entry.get("schema_revision")
+                if not current_rev:
+                    raise ReleaseError("原版本缺少 schema_revision，无法恢复数据库")
+                _alembic(ctx, current_tag, "upgrade", current_rev)
             _switch_tag(ctx, current_tag)
             _up(ctx)
             _health_check(ctx, current_sha if current_sha and current_sha != "unknown" else None)
@@ -755,7 +865,8 @@ def cmd_rollback(ctx: Context, target: str | None) -> int:
         except Exception as restore_exc:
             print(f"[release] 恢复原版本失败: {restore_exc}", file=sys.stderr)
         print(f"[release] 回滚失败: {exc}", file=sys.stderr)
-        print(f"[release] 备份保留在: {backup_path}", file=sys.stderr)
+        if backup_path:
+            print(f"[release] 备份保留在: {backup_path}", file=sys.stderr)
         return 1
 
     manifest["current"] = target
@@ -768,6 +879,7 @@ def cmd_rollback(ctx: Context, target: str | None) -> int:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

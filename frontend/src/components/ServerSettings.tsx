@@ -28,13 +28,13 @@ export function ServerSettings() {
         </div>
       )}
 
-      <ServerCredentialsSection providers={providers} />
       <ModelProfilesSection
         providers={providers}
         suggestedModels={suggestedModels}
         defaultModel={defaultModel}
         connectionTestNotice={runtime?.connection_test_notice ?? null}
       />
+      <ServerCredentialsSection providers={providers} />
       <PromptTemplatesSection promptPlaceholders={promptPlaceholders} />
     </div>
   );

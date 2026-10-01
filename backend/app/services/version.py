@@ -95,7 +95,11 @@ def record_release_boot(session: Session) -> None:
     latest = session.scalars(
         select(ReleaseRecord).order_by(ReleaseRecord.created_at.desc()).limit(1)
     ).first()
-    if latest is not None and latest.version == identity.version and latest.git_sha == identity.git_sha:
+    if (
+        latest is not None
+        and latest.version == identity.version
+        and latest.git_sha == identity.git_sha
+    ):
         return
 
     session.add(

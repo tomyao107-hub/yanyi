@@ -81,6 +81,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestCli
     app.dependency_overrides[get_session] = test_session
     app.dependency_overrides[get_settings] = lambda: settings
     monkeypatch.setattr(adapters, "session_factory", background_session)
+    monkeypatch.setattr("backend.app.main.session_factory", background_session)
     monkeypatch.setattr("backend.app.main.migrate_db", lambda: None)
     monkeypatch.setattr("backend.app.main._recover_interrupted_work", lambda: None)
     monkeypatch.setattr("backend.app.main.initialize_admin", lambda session: False)
@@ -992,6 +993,44 @@ def test_translation_runtime_logs_expose_request_response_and_writeback(
     )
     assert provider_log["details_json"]["model"] == "mock/logged"
     assert provider_log["details_json"]["token_out"] == 4
+
+
+def test_runtime_log_filters_and_clear_are_project_scoped(client: TestClient) -> None:
+    from backend.app.models import RuntimeLog
+
+    first = int(upload_markdown(client)["id"])
+    second = int(upload_markdown(client)["id"])
+    with adapters.session_factory() as session:
+        for project_id, level, event_type in (
+            (first, "info", "provider.responded"),
+            (first, "error", "segment.failed"),
+            (second, "info", "provider.responded"),
+        ):
+            session.add(
+                RuntimeLog(
+                    project_id=project_id,
+                    level=level,
+                    event_type=event_type,
+                    message="test event",
+                )
+            )
+        session.commit()
+    response = client.get(
+        f"/api/projects/{first}/logs", params={"event_type": "provider.responded"}
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert client.get(f"/api/projects/{first}/logs", params={"level": "error"}).json()["total"] == 1
+    assert client.delete(f"/api/projects/{first}/logs").status_code == 204
+    assert client.get(f"/api/projects/{first}/logs").json()["total"] == 0
+    assert client.get(f"/api/projects/{second}/logs").json()["total"] == 1
+    assert client.delete("/api/projects/999999/logs").status_code == 404
+
+
+def test_clear_runtime_logs_requires_csrf(client: TestClient) -> None:
+    project_id = int(upload_markdown(client)["id"])
+    del client.headers[CSRF_HEADER_NAME]
+    assert client.delete(f"/api/projects/{project_id}/logs").status_code == 403
 
 
 def _wait_until_idle(client: TestClient, project_id: int, timeout: float = 5) -> dict[str, object]:

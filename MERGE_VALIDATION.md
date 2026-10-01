@@ -56,9 +56,42 @@ git_sha 校验改为读取实际运行容器的版本文件，缺失或不匹配
 隔离容器、卷和测试镜像已清理；4 个非空备份与 manifest 留存服务器供复查。
 本地完整日志：`work/remote-e2e.log`。
 
-验证门禁已满足，以 fast-forward 将集成分支合入本地 main。未推送远端。
+验证门禁已满足，以 fast-forward 将集成分支合入 main，保留功能分支便于追溯。
 正式部署继续保留原密钥与状态卷；旧镜像通过不可变 ID 登记为 legacy 回退版本，
-部署前保存原源码、配置和停止写入后的状态卷备份。正式部署结果在任务完成回复中报告。
+部署前保存原源码、配置和停止写入后的状态卷备份。
+
+## 正式部署与线上复核
+
+部署站点：`http://121.4.28.63:6020/`；部署版本 `2026.10.01-657a39d`，
+代码提交 `657a39d7a7474ae4f11f257369fad4ce5e44524a`。
+部署完成后仅更新本验证文档，应用代码未改变。
+
+- app 与 Caddy 均 healthy；运行镜像、环境 tag、manifest 当前版本一致。
+- 数据库从 `0004_runtime_logs` 升级至 `0005_release_record`，与代码迁移头一致，SQLite integrity_check 为 ok。
+- 切换前停机备份 `backup-20261001-111116-2026.10.01-657a39d.tar.gz`，70,495,153 字节。
+  迁移前解出数据库验证完整性、旧 schema、四张原数据表的行数与完整摘要；备份及源配置仅 root 可访问。
+- 线上完成管理员登录、未认证访问拒绝、缺失 CSRF 写操作拒绝、上传解析、真实模型翻译、
+  日志过滤／分页／清空、双语 Markdown 导出及下载、退出登录。
+  仅使用两段极短的专属测试文本，测试项目与文件已清理。
+- 浏览器确认新增模型的密钥录入及复用模式、无嵌套 form、系统版本与 schema 状态、
+  原书工作台、运行日志页过滤及历史加载（100 → 200 条）。
+- 原 project（5 行）、segment（12,809 行）、model_profile（2 行）、provider_credential（1 行）
+  整表 SHA-256 摘要均与升级前一致，包含原正文与译文。
+- 更新后的服务日志没有 ERROR 或异常堆栈；当前 secret 文件权限和 UID 保持原状态。
+- 原镜像 `sha256:7de5aacead9933f9735b4a9ca8fa7db70c1e62beff044875bcc01ec8ce322478`
+  保留为 `trans-linux:legacy-20261001-7de5aace`。
+
+服务器回退入口（仅供需要时运行，本次未对正式服务执行回退）：
+
+```sh
+cd /opt/trans-linux
+umask 077
+python3 deploy/release.py rollback legacy-20261001-7de5aace
+```
+
+原源码与配置：`/opt/trans-deploy-20261001/pre-upgrade/source.tar.gz`。
+本地过程记录：`work/remote-prod-install.log`、`work/server-smoke.log`、
+`work/remote-prod-verify.log`；截图 `work/deployment-settings.jpg`。
 
 ## 首轮浏览中的既有观察
 

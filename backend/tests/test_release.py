@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from deploy import release
 
@@ -181,3 +182,18 @@ def test_archive_traversal_rejected(tmp_path: Path) -> None:
     with pytest.raises(release.ReleaseError):
         release._extract_archive(archive, tmp_path / "src")
     assert not (tmp_path / "outside").exists()
+
+
+def test_e2e_compose_override_is_valid_and_isolated() -> None:
+    script = (Path(__file__).parents[2] / "deploy" / "test_release_e2e.sh").read_text()
+    override = script.split("<<'YAML'\n", 1)[1].split("\nYAML", 1)[0]
+    config = yaml.safe_load(override.replace("!override", ""))
+    assert config["name"] == "trans-e2e"
+    app = config["services"]["app"]
+    assert app["image"].startswith("${TRANS_RELEASE_IMAGE}:")
+    assert not any(service.get("ports") for service in config["services"].values())
+    assert {mount["target"] for mount in app["volumes"]} == {
+        "/var/lib/trans",
+        "/run/secrets/master_key",
+        "/run/secrets/admin_bootstrap_password",
+    }

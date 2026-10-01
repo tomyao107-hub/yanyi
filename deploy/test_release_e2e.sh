@@ -100,6 +100,7 @@ name: trans-e2e
 
 services:
   app:
+    image: "${TRANS_RELEASE_IMAGE}:${TRANS_IMAGE_TAG:-latest}"
     environment:
       TRANS_ENVIRONMENT: development
       TRANS_PUBLIC_ORIGIN: http://127.0.0.1:18080
@@ -122,7 +123,6 @@ services:
     ports: !override []
     depends_on: !override
       app:
-    image: ${TRANS_RELEASE_IMAGE}:${TRANS_IMAGE_TAG:-latest}
         condition: service_started
 YAML
 

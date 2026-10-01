@@ -185,7 +185,9 @@ def test_archive_traversal_rejected(tmp_path: Path) -> None:
 
 
 def test_e2e_compose_override_is_valid_and_isolated() -> None:
-    script = (Path(__file__).parents[2] / "deploy" / "test_release_e2e.sh").read_text()
+    script = (Path(__file__).parents[2] / "deploy" / "test_release_e2e.sh").read_text(
+        encoding="utf-8"
+    )
     override = script.split("<<'YAML'\n", 1)[1].split("\nYAML", 1)[0]
     config = yaml.safe_load(override.replace("!override", ""))
     assert config["name"] == "trans-e2e"

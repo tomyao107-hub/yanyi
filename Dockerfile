@@ -82,7 +82,10 @@ COPY settings.toml ./settings.toml
 COPY --from=frontend-build /build/frontend/dist ./frontend/dist/
 COPY --chmod=0555 deploy/entrypoint.sh /usr/local/bin/trans-entrypoint
 
-RUN mkdir -p /var/lib/trans/uploads /var/lib/trans/exports \
+# Release archives may be extracted with umask 077. COPY keeps those host
+# permissions, so make the packaged application assets readable by trans.
+RUN chmod -R a=rX /app \
+    && mkdir -p /var/lib/trans/uploads /var/lib/trans/exports \
       /var/lib/trans/tmp /var/lib/trans/backups \
     && chown -R "$APP_UID:$APP_GID" /var/lib/trans \
     && chmod -R u=rwX,g=,o= /var/lib/trans

@@ -2,6 +2,7 @@ import { createBrowserRouter } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { RouteErrorPage } from "./components/PageError";
 import { LibraryPage } from "./pages/LibraryPage";
+import { LogsPage } from "./pages/LogsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { WorkbenchPage } from "./pages/WorkbenchPage";
 
@@ -13,6 +14,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <LibraryPage /> },
       { path: "projects/:projectId", element: <WorkbenchPage /> },
+      { path: "projects/:projectId/logs", element: <LogsPage /> },
       { path: "settings", element: <SettingsPage /> },
     ],
   },

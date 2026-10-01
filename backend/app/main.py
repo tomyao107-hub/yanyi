@@ -21,6 +21,7 @@ from starlette.responses import Response
 from . import __version__
 from .api import artifacts, auth, glossary, logs, projects, segments, stream, tm
 from .api import settings as settings_api
+from .api import system as system_api
 from .api.runtime import translation_tasks
 from .config import get_settings
 from .db import checkpoint_wal, migrate_db, session_factory
@@ -30,6 +31,7 @@ from .security.crypto import MASTER_KEY_ENV, CredentialCryptoError, read_master_
 from .security.dependencies import require_authenticated_session
 from .security.sessions import initialize_admin
 from .services.prompts import seed_builtin_templates
+from .services.version import load_build_identity, record_release_boot
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +170,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Existing rows, including admin edits, are left untouched.
         if seed_builtin_templates(session):
             session.commit()
+        # Record this boot in release history. Never blocks startup: a failure
+        # (e.g. release_record not yet migrated on an old DB) is only logged.
+        try:
+            record_release_boot(session)
+        except Exception:
+            logger.exception("Failed to record release boot")
 
     # Start the durable job worker so queued jobs execute. SIGTERM/SIGINT are
     # handled by the ASGI server (uvicorn), which runs this lifespan's exit;
@@ -234,7 +242,11 @@ def create_app() -> FastAPI:
 
     @application.get("/health/live", response_model=HealthResponse, tags=["system"])
     def live_health() -> HealthResponse:
-        return HealthResponse(status="ok", version=__version__)
+        return HealthResponse(
+            status="ok",
+            version=__version__,
+            git_sha=load_build_identity().git_sha,
+        )
 
     health_dependencies = (
         [] if not settings.is_production else [Depends(require_authenticated_session)]
@@ -263,7 +275,11 @@ def create_app() -> FastAPI:
             raise StarletteHTTPException(
                 status_code=503, detail="database unavailable"
             ) from exc
-        return HealthResponse(status="ok", version=__version__)
+        return HealthResponse(
+            status="ok",
+            version=__version__,
+            git_sha=load_build_identity().git_sha,
+        )
 
     protected = [Depends(require_authenticated_session)]
     application.include_router(auth.router, prefix=settings.api_prefix)
@@ -288,6 +304,9 @@ def create_app() -> FastAPI:
     application.include_router(tm.router, prefix=settings.api_prefix, dependencies=protected)
     application.include_router(
         settings_api.router, prefix=settings.api_prefix, dependencies=protected
+    )
+    application.include_router(
+        system_api.router, prefix=settings.api_prefix, dependencies=protected
     )
 
     frontend_dist = settings.resolved_frontend_dist

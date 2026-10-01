@@ -387,3 +387,24 @@ export interface UploadProjectInput {
   targetLang: string;
   providerCfg?: ProviderConfig;
 }
+
+export interface ReleaseRecord {
+  id: number;
+  version: string;
+  git_sha: string | null;
+  kind: "boot" | "install" | "rollback" | string;
+  status: "ok" | "failed" | string;
+  detail: string | null;
+  created_at: string;
+}
+
+export interface VersionInfo {
+  version: string;
+  git_sha: string | null;
+  build_time: string | null;
+  code_schema_head: string;
+  db_schema_revision: string | null;
+  schema_ok: boolean;
+  releases: ReleaseRecord[];
+  release_commands: string[];
+}

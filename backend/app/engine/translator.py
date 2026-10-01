@@ -916,7 +916,7 @@ class Translator:
                                             "type": "runtime_log",
                                             "project_id": project_id,
                                             "segment_id": segment_id,
-                                            "level": "info",
+                                            "level": "debug",
                                             "event_type": "segment.tm_persisted",
                                             "message": "命中翻译记忆并写入段落",
                                             "details": {"target_chars": len(cached)},
@@ -934,7 +934,7 @@ class Translator:
                                     "type": "runtime_log",
                                     "project_id": project_id,
                                     "segment_id": segment_id,
-                                    "level": "info",
+                                    "level": "debug",
                                     "event_type": "provider.requested",
                                     "message": "已向模型提交段落翻译请求",
                                     "details": {
@@ -1010,7 +1010,7 @@ class Translator:
                                     "type": "runtime_log",
                                     "project_id": project_id,
                                     "segment_id": segment_id,
-                                    "level": "info",
+                                    "level": "debug",
                                     "event_type": "provider.responded",
                                     "message": "模型已返回段落译文",
                                     "details": {
@@ -1082,7 +1082,7 @@ class Translator:
                                     "type": "runtime_log",
                                     "project_id": project_id,
                                     "segment_id": segment_id,
-                                    "level": "info",
+                                    "level": "debug",
                                     "event_type": "segment.persisted",
                                     "message": "段落译文已写入数据库",
                                     "details": {

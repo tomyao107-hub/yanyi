@@ -28,6 +28,7 @@ import type {
   TranslateScope,
   TranslationMemoryStats,
   UploadProjectInput,
+  VersionInfo,
 } from "./types";
 
 const API_ROOT = "/api";
@@ -190,6 +191,10 @@ export const api = {
 
   async runtimeSettings(): Promise<PublicSettings> {
     return request<PublicSettings>("/settings");
+  },
+
+  async systemVersion(): Promise<VersionInfo> {
+    return request<VersionInfo>("/system/version");
   },
 
   async providerCredentials(): Promise<ProviderCredential[]> {
@@ -398,7 +403,7 @@ export const api = {
 
   async runtimeLogs(
     projectId: number,
-    options: { page?: number; pageSize?: number; level?: RuntimeLogLevel } = {},
+    options: { page?: number; pageSize?: number; level?: RuntimeLogLevel; eventType?: string } = {},
   ): Promise<RuntimeLogPage> {
     const page = options.page ?? 1;
     const pageSize = options.pageSize ?? 200;
@@ -407,12 +412,17 @@ export const api = {
         page,
         page_size: pageSize,
         level: options.level,
+        event_type: options.eventType,
       })}`,
     );
     return {
       ...payload,
       has_more: page * pageSize < payload.total,
     };
+  },
+
+  async deleteRuntimeLogs(projectId: number): Promise<void> {
+    await request<void>(`/projects/${projectId}/logs`, { method: "DELETE" });
   },
 
   async updateSegment(

@@ -19,6 +19,7 @@ settings.local.toml
 .claude/settings.local.json
 
 # Runtime data
+.releases/
 data/trans.db
 data/trans.db-*
 data/credential-master.key
